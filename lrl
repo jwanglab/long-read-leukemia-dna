@@ -1,0 +1,59 @@
+#!/bin/bash
+
+#    ./lrl <sorted.bam> <targets.bed> <reference.fasta> <repeats.bed> <annotation.gff> <output_prefix>
+
+if [[ $# -ne 6 ]]; then
+  echo "usage: ./lrl <sorted.bam> <targets.bed> <reference.fasta> <repeats.bed> <annotation.gff> <output_prefix>"
+  exit
+fi
+
+bam=$1
+bed=$2
+ref=$3
+repeats=$4
+anno=$5
+out_prefix=$6
+
+if [ ! -s $bam ]; then
+  echo "ERROR: BAM file '$bam' does not exist or is empty"
+  exit
+fi
+
+if [ ! -s $ref ]; then
+  echo "ERROR: Reference FASTA file '$ref' does not exist or is empty"
+  exit
+fi
+
+if [ ! -s $bed ]; then
+  echo "ERROR: Target BED file '$bed' does not exist or is empty"
+  exit
+fi
+
+if [ ! -s $repeats ]; then
+  echo "ERROR: Repeat BED file '$repeats' does not exist or is empty"
+  exit
+fi
+
+if [ ! -s $anno ]; then
+  echo "ERROR: Annotatin GFF file '$gff' does not exist or is empty"
+  exit
+fi
+
+mkdir -p ${out_prefix%/*}
+
+
+# fusion and karyotyping
+# usage: Call karyotype and gene fusions/translocations from whole-genome nanopore seq BAM file [-h] [--read_lim READ_LIM] [--outdir OUTDIR] [--full] [--genes GENES [GENES ...]] bam bed repeats cov
+python fusion_karyotype.py --outdir $out_prefix --full $bam $bed $repeats ${out_prefix}/karyotype.png > $out_prefix/fusion.log
+
+
+# SNVs
+# usage: Identify coding variation in nanopore adaptive sampling BAM file [-h] [--genes GENES [GENES ...]] [--phase] bam ref gff
+python adaptive_SNVs.py $bam $ref $gff > $out_prefix/snvs.log
+
+# FLT3
+# usage: Predict FLT3-ITD and allelic ratio from targeted nanopore sequencing [-h] fastq out
+if [ ! -s $out_prefix/reads.fq ]; then
+  samtools fastq $bam > $out_prefix/reads.fq
+fi
+python flt3_insilico_pcr.py $out_prefix/reads.fq $out_prefix/FLT3-ITD_CE.png > $out_prefix/flt3.log
