@@ -42,26 +42,44 @@ The output folder will contain the logs and results of the component analyses, a
 Fusion calling and karyotyping
 ------------------------------
 
-**fusion\_karyotype.py** requires an optionally sorted BAM file, BED file with enriched targets (including putative translocation genes), and a BED file of annotated repetitive elements. The output log file contains sequencing and enrichment statistics including throughput and relative enrichment from adaptive sampling, sequencing depth across target genes and chromosomes, and detected translocations among the target genes including read support and genomic breakpoint(s). A figure is also produced showing relative genome-wide sequencing depth for karyotype assessment. If the input BAM file is sorted and the script is not run with the "--full" flag, it will only assess alignments in target regions, making sequencing statistics and karyotype unreliable, however translocation detection will be performed much faster.
+**fusions.py** requires an optionally sorted BAM file, BED file with enriched targets (including putative translocation genes), and a BED file of annotated repetitive elements. The output log file contains sequencing and enrichment statistics including throughput and relative enrichment from adaptive sampling, sequencing depth across target genes and chromosomes, and detected translocations among the target genes including read support and genomic breakpoint(s). If the input BAM file is sorted and the script is not run with the "--full" flag, it will only assess alignments in target regions, making sequencing statistics and karyotype unreliable, however translocation detection will be performed much faster. Similarly, if the BAM file includes only on-target reads, the genome-wide coverage and enrichment will be incorrect.
 
-    usage: Call karyotype and gene fusions/translocations from whole-genome nanopore seq BAM file [-h] [--read_lim READ_LIM] [--outdir OUTDIR] [--full] [--genes GENES [GENES ...]] bam bed repeats cov
+    usage: Call gene fusions/translocations from whole-genome nanopore seq BAM file [-h] [--outdir OUTDIR] [--full] [--genes GENES [GENES ...]] bed repeats bams [bams ...]
     
     positional arguments:
-      bam                   BAM of reads to hg38 (mm2 -x map-ont)
       bed                   BED file including target genes
       repeats               RepeatMasker BED file
-      cov                   Output file for coverage figure
+      bams                  BAM file(s) of aligned reads (minimap2 -cx map-ont)
     
     options:
       -h, --help            show this help message and exit
-      --read_lim READ_LIM   Maximum reads to process (default is all)
       --outdir OUTDIR       Output directory for bigger results
       --full                Assess full file, including off-target reads, in sorted BAM
       --genes GENES [GENES ...]
-                        Evaluate only the given genes (must be in the enrichment set)
+                            Evaluate only the given genes (must be in the enrichment set)
 
-If "--outdir" is specific, raw per-nucleotide coverage profiles will be generated and stored as exported Numpy arrays in the specific directory. Also a PAF file will be created containing the alignments exclusively within the target regions. This file can be used to interrogate and visualize translocations using our fusion visualization interface:
+If "--outdir" is specified a PAF file will be created containing the alignments exclusively within the target regions. This file can be used to interrogate and visualize translocations using our fusion visualization interface:
 [https://github.com/jwanglab/jwanglab.github.io/tree/master/fusion](https://github.com/jwanglab/jwanglab.github.io/tree/master/fusion), with a publicly available instance at [https://jwanglab.org/fusion/](https://jwanglab.org/fusion/)
+
+
+Karyotyping
+-----------
+
+**karyotype.py** requires a BAM file, BED file of annotated repetitive elements, and an output directory.
+
+    usage: Digital karyotyping from BAM or binned depth file [-h] [--repeats REPEATS] [--outdir OUTDIR] [--read_lim READ_LIM] [-v] input [input ...]
+
+    positional arguments:
+      input                BAM/SAM of reads aligned to T2T or TSV of binned sequencing depth
+
+    options:
+      -h, --help           show this help message and exit
+      --repeats REPEATS    RepeatMasker BED file
+      --outdir OUTDIR      Output directory/prefix
+      --read_lim READ_LIM  Maximum reads to process (default is all)
+      -v                   Verbose
+
+In the specified output directory, a binned coverage profile (\<OUTDIR\>/coverage\_1Mbp\_bins.tsv) is produced, and a figure (\<OUTDIR\>/karytype.png) are produced showing relative genome-wide sequencing depth for karyotype assessment. Output includes arm-level copy number estimates for ~metacentric chromosomes and whole-chromosome copy number for the others, and an ISCN-compliant karyotype profile string.
 
 
 SNV detection in enriched targets
@@ -113,6 +131,18 @@ For example, to assess sequencing depth within ERG enrichment window (&plusmn; 5
     positional arguments:
       fastq       Reads in FASTQ format
       out         Output image file for pseudo-capillary electrophoresis sizing of FLT3 amplicons
+
+    options:
+      -h, --help  show this help message and exit
+
+
+**ubtf\_insilico\_pcr.py** identifies reads containing commonly used *UBTF* primer sites for capillary electrophoresis-based fragment size analysis and plots the distribution of these WGS-based "amplicon" sizes to enable identification of *UBTF*-ITD and allelic ratio.
+
+    usage: Predict UBTF-ITD and allelic ratio from targeted nanopore sequencing [-h] fastq out
+
+    positional arguments:
+      fastq       Reads in FASTQ format
+      out         Output image file for pseudo-capillary electrophoresis sizing of UBTF amplicons
 
     options:
       -h, --help  show this help message and exit
