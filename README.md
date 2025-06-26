@@ -121,6 +121,6 @@ For example, to assess sequencing depth within ERG enrichment window (&plusmn; 5
 Citation
 --------
 
-Julie Geyer, Kofi Opoku, John Lin, Lori Ramkissoon, Charles Mullighan, Nickhill Bhakta, Thomas B. Alexander, Jeremy R. Wang.
+Julie Geyer, Kofi B. Opoku, John Lin, Lori Ramkissoon, Charles Mullighan, Nickhill Bhakta, Thomas B. Alexander, Jeremy R. Wang.
 *Real-time genomic characterization of pediatric acute leukemia using adaptive sampling*.
 [https://www.biorxiv.org/content/10.1101/2024.10.11.617690v1](https://www.biorxiv.org/content/10.1101/2024.10.11.617690v1) 

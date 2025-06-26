@@ -18,6 +18,10 @@ class Reference:
 hg38 = Reference(["NC_000001.11", "NC_000002.12", "NC_000003.12", "NC_000004.12", "NC_000005.10", "NC_000006.12", "NC_000007.14", "NC_000008.11", "NC_000009.12", "NC_000010.11", "NC_000011.10", "NC_000012.12", "NC_000013.11", "NC_000014.9", "NC_000015.10", "NC_000016.10", "NC_000017.11", "NC_000018.10", "NC_000019.10", "NC_000020.11", "NC_000021.9", "NC_000022.11", "NC_000023.11", "NC_000024.10"])
 t2t = Reference(["NC_060925.1", "NC_060926.1", "NC_060927.1", "NC_060928.1", "NC_060929.1", "NC_060930.1", "NC_060931.1", "NC_060932.1", "NC_060933.1", "NC_060934.1", "NC_060935.1", "NC_060936.1", "NC_060937.1", "NC_060938.1", "NC_060939.1", "NC_060940.1", "NC_060941.1", "NC_060942.1", "NC_060943.1", "NC_060944.1", "NC_060945.1", "NC_060946.1", "NC_060947.1", "NC_060948.1"])
 
+use_transcripts = {
+    "TPMT": "rna-NM_001346817.1",
+}
+
 # this defaults to the first mRNA/CDS listed after the gene in the GFF file
 #   it is presumed to be the canonical transcript, but in looks like sometimes it isn't
 #   so for the time being, we are manually overwriting those when we find them (ex. TP53)
@@ -43,6 +47,9 @@ def get_gene_annotation(gene, gff):
                 gene_strand = g[6]
         elif gene_id is not None and mrna_id is None and g[2] == "mRNA":
             fields = {a[:a.index('=')]:a[a.index('=')+1:] for a in g[8].split(';')}
+            # requires specific mRNA/transcripts for specified genes
+            if gene.upper() in use_transcripts and fields["ID"] != use_transcripts[gene.upper()]:
+                continue
             if fields["Parent"] == gene_id:
                 if gene_name == "TP53" and fields["ID"] != "rna-NM_001126112.3": # this is the canonical transcript but is listed second
                     continue
@@ -144,22 +151,23 @@ codontab = {
     'GGT': 'G'
 }
 
-def main(bam_file, gene_names, refseq, gff, phase):
+def main(bam_file, gene_names, refseq, gff, phase, maf_threshold):
     refseq = pyfastx.Fasta(refseq)
     af = pysam.AlignmentFile(bam_file, mode='rb')
     if gene_names is not None and len(gene_names) > 0:
         for gene_name in gene_names:
             sys.stderr.write("\n")
             sys.stderr.write(f"------ {gene_name} ------\n")
-            compare(bam_file, gene_name, refseq, gff, af, phase)
+            depth, rpm, muts = compare(bam_file, gene_name, refseq, gff, af, phase, maf_threshold)
+            sys.stdout.write(f"{gene_name}\t{depth}\t" + '\t'.join(muts) + "\n")
     else:
         for gene_name in ["PAX5", "IKZF1", "CDKN2A", "CDKN2B", "CRLF2", "ETV6", "EBF1", "ERG", "RUNX1", "TPMT", "NUDT15", "FLT3", "NPM1"]:
             sys.stderr.write("\n")
             sys.stderr.write(f"------ {gene_name} ------\n")
-            depth, rpm, muts = compare(bam_file, gene_name, refseq, gff, af, phase)
-            sys.stdout.write(f"{gene_name}\t{depth}\t{rpm}\t" + '\t'.join(muts) + "\n")
+            depth, rpm, muts = compare(bam_file, gene_name, refseq, gff, af, phase, maf_threshold)
+            sys.stdout.write(f"{gene_name}\t{depth}\t" + '\t'.join(muts) + "\n")
 
-def compare(bam_file, gene_name, refseq, gff, af, do_phase, verbose=True):
+def compare(bam_file, gene_name, refseq, gff, af, do_phase, maf_threshold, verbose=True):
     gene_id, gene_name, mrna_id, mrna_name, chrom, gene_strand, cds = get_gene_annotation(gene_name, gff)
     cds_len = 0
     if verbose:
@@ -177,7 +185,7 @@ def compare(bam_file, gene_name, refseq, gff, af, do_phase, verbose=True):
     bam_chrom = chrom
     if chrom not in af.references:
         for ref in [hg38, t2t]:
-            if ref.chrom_names[ref.chroms.index(chrom)] in af.references:
+            if chrom in ref.chroms and ref.chrom_names[ref.chroms.index(chrom)] in af.references:
                 bam_chrom = ref.chrom_names[ref.chroms.index(chrom)]
                 break
 
@@ -285,7 +293,7 @@ def compare(bam_file, gene_name, refseq, gff, af, do_phase, verbose=True):
                 sys.stderr.write(f"  {covg[row]}\n")
                 homs.append(row)
                 alt.append((" ACGTN-"[als[-1][0]], als[-1][0]/locus_depth))
-            elif als[-1][1] >= locus_depth * 0.3 and als[-2][1] >= locus_depth * 0.3 and als[-2][1] > 1: # ~heterozygous
+            elif als[-1][1] >= locus_depth * maf_threshold and als[-2][1] >= locus_depth * maf_threshold and als[-2][1] > 1: # ~heterozygous
                 sys.stderr.write(f"HET {ref_cds[row].upper()} -> {' ACGTN-'[als[-1][0]]}/{' ACGTN-'[als[-2][0]]} at {row+1}\n")
                 sys.stderr.write(f"  {covg[row]}\n")
                 hets.append(row)
@@ -353,11 +361,11 @@ def compare(bam_file, gene_name, refseq, gff, af, do_phase, verbose=True):
             sys.stderr.write(f"  template truncated at {i}: {trans[i]}\n")
         elif trans[i] != ref_trans[i] and trans[i] != ' ':
             sys.stderr.write(f"  {ref_trans[i]}{i+1}{trans[i]} ({trans_af[i]:.2f} AF)\n")
-            if trans_af[i] >= 0.3:
+            if trans_af[i] >= maf_threshold:
                 muts.append(f"{ref_trans[i]}{i+1}{trans[i]} ({trans_af[i]:.2f} AF)")
         elif alt_trans[i] != ref_trans[i] and alt_trans[i] != ' ':
             sys.stderr.write(f"  HET {ref_trans[i]}{i+1}{alt_trans[i]} ({alt_trans_af[i]:.2f} AF)\n")
-            if alt_trans_af[i] >= 0.3:
+            if alt_trans_af[i] >= maf_threshold:
                 muts.append(f"{ref_trans[i]}{i+1}{alt_trans[i]} ({alt_trans_af[i]:.2f} AF)")
 
     return depth, rpm, muts
@@ -369,6 +377,7 @@ if __name__ == "__main__":
     parser.add_argument("ref", help="Reference FASTA file")
     parser.add_argument("gff", help="Matching reference annotation GFF")
     parser.add_argument("--genes", help="Gene name", nargs='+')
+    parser.add_argument("--maf", help="Minimum MAF to report (default: 0.3)", type=float, default=0.3)
     parser.add_argument("--phase", help="Perform variant phasing where possible", action="store_true", default=False)
     args = parser.parse_args()
-    main(args.bam, args.genes, args.ref, args.gff, args.phase)
+    main(args.bam, args.genes, args.ref, args.gff, args.phase, args.maf)
