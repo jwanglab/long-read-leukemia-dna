@@ -44,22 +44,36 @@ mkdir -p ${out_prefix%/*}
 
 # fusions
 # usage: Call gene fusions/translocations from whole-genome nanopore seq BAM file [-h] [--outdir OUTDIR] [--full] [--genes GENES [GENES ...]] bed repeats bams [bams ...]
-python fusions.py --outdir $out_prefix --full $bed $repeats $bam > $out_prefix/fusions.json
+if [ ! -s ${out_prefix}/fusions.json ]; then
+  python fusions.py --outdir $out_prefix --full $bed $repeats $bam > $out_prefix/fusions.json
+fi
 
 # karyotyping
 # usage: Digital karyotyping from BAM or binned depth file [-h] [--repeats REPEATS] [--outdir OUTDIR] [--read_lim READ_LIM] [-v] input [input ...]
-python karyotype.py --outdir $out_prefix --repeats $repeats $bam > $out_prefix/digital_karyotype.json
-
-# SNVs
-# usage: Identify coding variation in nanopore adaptive sampling BAM file [-h] [--genes GENES [GENES ...]] [--phase] bam ref gff
-python adaptive_SNVs.py $bam $ref $gff > $out_prefix/snvs.log
+if [ ! -s ${out_prefix}/karyotype.json ]; then
+  if [ -s ${out_prefix}/coverage_1Mbp_bins.tsv ]; then
+    python lrdk.py ${out_prefix}/coverage_1Mbp_bins.tsv --repeats $repeats --outdir ${out_prefix} --json > ${out_prefix}/karyotype.json
+  else
+    python lrdk.py ${bam} --repeats $repeats --outdir ${out_prefix} --json > ${out_prefix}/karyotype.json
+  fi
+fi
 
 # FLT3
 # usage: Predict FLT3-ITD and allelic ratio from targeted nanopore sequencing [-h] bam out
-python flt3_insilico_pcr.py $bam $out_prefix/flt3_itd.png > $out_prefix/flt3_itd.json
+if [ ! -s ${out_prefix}/flt3_itd.json ]; then
+  python flt3_insilico_pcr.py ${out_prefix}/flt3_itd.png ${bam} > ${out_prefix}/flt3_itd.json
+fi
 
 # UBTF
 # usage: Predict UBTF-ITD and allelic ratio from targeted nanopore sequencing [-h] bam out
-python flt3_insilico_pcr.py $bam $out_prefix/ubtf_itd.png > $out_prefix/ubtf_itd.json
+if [ ! -s ${out_prefix}/ubtf_itd.json ]; then
+  python ubtf_insilico_pcr.py ${out_prefix}/ubtf_itd.png ${bam} > ${out_prefix}/ubtf_itd.json
+fi
 
-python make_report.py $out_prefix ${out_prefix}/report.docx
+# SNVs
+# usage: Identify coding variation in nanopore adaptive sampling BAM file [-h] [--genes GENES [GENES ...]] [--phase] bam ref gff
+if [ ! -s ${out_prefix}/genotypes.json ]; then
+  python targeted_SNVs.py $bam $ref $gff --phase > ${out_prefix}/genotypes.json
+fi
+
+python make_report.py ${out_prefix} ${out_prefix}.report.docx

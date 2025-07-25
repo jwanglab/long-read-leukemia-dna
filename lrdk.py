@@ -396,6 +396,7 @@ if __name__ == "__main__":
     parser.add_argument("--repeats", help="RepeatMasker BED file")
     parser.add_argument("--outdir", help="Output directory/prefix")
     parser.add_argument("--read_lim", help="Maximum reads to process (default is all)", type=int)
+    parser.add_argument("--json", help="Output JSON format (default: TSV)", action="store_true", default=False)
     parser.add_argument("-v", help="Verbose", action="store_true", default=False)
     args = parser.parse_args()
 
@@ -418,7 +419,14 @@ if __name__ == "__main__":
         cns = digital_karyotype(bins, args.v)
         for c in cns:
             sys.stderr.write(f"{c}: {cns[c]}\n")
-        print("sample\t" + "\t".join(c for c in cns) + "\tISCN")
-        print(f"{a}\t" + "\t".join(str(cns[c]) for c in cns) + f"\t{ISCN_string(cns)}")
+        if args.json:
+            import json
+            res = {f"{c}":{'n':f"{cns[c]}", 'x':f"{numpy.median(bins[c])}"} for c in cns}
+            res["ISCN_karyotype"] = f"{ISCN_string(cns)}"
+            res["reads_aligned"] = f"{sum([numpy.sum(bins[c]) for c in bins])}"
+            print(json.dumps(res))
+        else:
+            print("sample\t" + "\t".join(c for c in cns) + "\tISCN")
+            print(f"{a}\t" + "\t".join(str(cns[c]) for c in cns) + f"\t{ISCN_string(cns)}")
         sys.stderr.write(f"{ISCN_string(cns)}\n")
 
