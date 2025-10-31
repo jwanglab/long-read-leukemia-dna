@@ -1,0 +1,17 @@
+Long read adaptive sampling analysis (UNC Ref. 24-0059) Non-commercial License
+
+(c) 2024-2025 The University of North Carolina at Chapel Hill.
+
+The University of North Carolina at Chapel Hill (“UNC”) and the developers (“Developers”) of [insert name of software project] (“Software”) give recipient (“Recipient”) and Recipient’s Institution (“Institution”) permission to use, copy and redistribute the software in source and binary forms, with or without modification for non-commercial purposes only provided that the following conditions are met:
+
+1) The software is used solely for non-commercial purposes. For commercial use rights, contact the Office of Technology Commercialization at UNC (OTC) at license@unc.edu.
+
+2) All copies and redistributions of Software in binary form and/or source code, related documentation and/or other materials provided with the Software must reproduce and retain the above copyright notice, this list of conditions, and the disclaimer below.
+
+3) Recipient will provide the Developers with feedback on the use of the Software in their research. The Developers and UNC are permitted to use any information Recipient provides in making changes to the Software. All feedback, bug reports and technical questions shall be sent to [Insert Developer contact email address]
+
+4) Neither the name of UNC nor the names of its Developers may be used for any purpose other than reproduction of the copyright notice and these terms.
+
+5) Recipient acknowledges that the Developers, UNC and its licensees may develop modifications to Software that may be substantially similar to Recipient’s modifications of Software, and that the Developers, UNC and its licensees shall not be constrained in any way by Recipient in UNC’s or its licensees’ use or management of such modifications. Recipient acknowledges the right of the Developers and UNC to prepare and publish modifications to Software that may be substantially similar or functionally equivalent to your modifications and improvements, and if Recipient or Institution obtains patent protection for any modification or improvement to Software, Recipient and Institution agree not to allege or enjoin infringement of their patent by the Developers, UNC or any of UNC’s licensees obtaining modifications or improvements to Software from the UNC or the Developers.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS, CONTRIBUTORS, AND THE UNIVERSITY OF NORTH CAROLINA AT CHAPEL HILL "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER, CONTRIBUTORS OR THE UNIVERSITY OF NORTH CAROLINA AT CHAPEL HILL BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
