@@ -1,18 +1,17 @@
 #!/bin/bash
 
-#    ./lrl <sorted.bam> <targets.bed> <reference.fasta> <repeats.bed> <annotation.gff> <output_prefix>
-
-if [[ $# -ne 6 ]]; then
-  echo "usage: ./lrl <sorted.bam> <targets.bed> <reference.fasta> <repeats.bed> <annotation.gff> <output_prefix>"
+if [[ $# -ne 7 ]]; then
+  echo "usage: ./lrl <sorted.bam> <target_genes.bed> <enriched_regions.bed> <reference.fasta> <repeats.bed> <annotation.gff> <output_prefix>"
   exit
 fi
 
 bam=$1
 bed=$2
-ref=$3
-repeats=$4
-gff=$5
-out_prefix=$6
+enriched_region=$3
+ref=$4
+repeats=$5
+gff=$6
+out_prefix=$7
 
 if [ ! -s $bam ]; then
   echo "ERROR: BAM file '$bam' does not exist or is empty"
@@ -29,6 +28,11 @@ if [ ! -s $bed ]; then
   exit
 fi
 
+if [ ! -s $enriched_region ]; then
+  echo "ERROR: Enriched regions BED file '$enriched_region' does not exist or is empty"
+  exit
+fi
+
 if [ ! -s $repeats ]; then
   echo "ERROR: Repeat BED file '$repeats' does not exist or is empty"
   exit
@@ -39,35 +43,40 @@ if [ ! -s $gff ]; then
   exit
 fi
 
-mkdir -p ${out_prefix%/*}
+mkdir -p ${out_prefix}
 
 
 # fusions
 # usage: Call gene fusions/translocations from whole-genome nanopore seq BAM file [-h] [--outdir OUTDIR] [--full] [--genes GENES [GENES ...]] bed repeats bams [bams ...]
 if [ ! -s ${out_prefix}/fusions.json ]; then
-  python fusions.py --outdir $out_prefix --full $bed $repeats $bam > $out_prefix/fusions.json
+  python fusions.py --outdir $out_prefix --full $bed $repeats $bam --one_sided leukemia_promiscuous_genes.txt > $out_prefix/fusions.json
 fi
+
+# MAF
+if [ ! -s ${out_prefix}/karyotype.maf ]; then
+  ./maf_rust/target/release/nano_maf ${bam} ${enriched_region} ${repeats} ./maf_rust/T2T_1Kgenomes_min10.tsv 20 > ${out_prefix}/karyotype.maf
+fi
+
 
 # karyotyping
 # usage: Digital karyotyping from BAM or binned depth file [-h] [--repeats REPEATS] [--outdir OUTDIR] [--read_lim READ_LIM] [-v] input [input ...]
 if [ ! -s ${out_prefix}/karyotype.json ]; then
   if [ -s ${out_prefix}/coverage_1Mbp_bins.tsv ]; then
-    python lrdk.py ${out_prefix}/coverage_1Mbp_bins.tsv --repeats $repeats --outdir ${out_prefix} --json > ${out_prefix}/karyotype.json
+    python lrdk_with_maf.py ${out_prefix}/coverage_1Mbp_bins.tsv --repeats $repeats --outdir ${out_prefix} --maf ${out_prefix}/karyotype.maf --adaptive ${enriched_region} --json > ${out_prefix}/karyotype.json
   else
-    python lrdk.py ${bam} --repeats $repeats --outdir ${out_prefix} --json > ${out_prefix}/karyotype.json
+    python lrdk_with_maf.py ${bam} --repeats $repeats --outdir ${out_prefix} --maf ${out_prefix}/karyotype.maf --adaptive ${enriched_region} --json > ${out_prefix}/karyotype.json
   fi
 fi
 
-# FLT3
-# usage: Predict FLT3-ITD and allelic ratio from targeted nanopore sequencing [-h] bam out
-if [ ! -s ${out_prefix}/flt3_itd.json ]; then
-  python flt3_insilico_pcr.py ${out_prefix}/flt3_itd.png ${bam} > ${out_prefix}/flt3_itd.json
+# FLT3, UBTF
+# usage: Predict ITD and allelic ratio from targeted nanopore sequencing [-h] bam out
+if [ ! -s ${out_prefix}/itd.json ]; then
+  python itd.py ${bam} > ${out_prefix}/itd.json
 fi
 
-# UBTF
-# usage: Predict UBTF-ITD and allelic ratio from targeted nanopore sequencing [-h] bam out
-if [ ! -s ${out_prefix}/ubtf_itd.json ]; then
-  python ubtf_insilico_pcr.py ${out_prefix}/ubtf_itd.png ${bam} > ${out_prefix}/ubtf_itd.json
+# CNVs
+if [ ! -s ${out_prefix}/cnvs.json ]; then
+  python call_CNVs.py $bam $bed ${out_prefix}/coverage_1Mbp_bins.tsv ${out_prefix}/fusions.json > ${out_prefix}/cnv.json
 fi
 
 # SNVs
@@ -76,4 +85,4 @@ if [ ! -s ${out_prefix}/genotypes.json ]; then
   python targeted_SNVs.py $bam $ref $gff --phase > ${out_prefix}/genotypes.json
 fi
 
-python make_report.py ${out_prefix} ${out_prefix}.report.docx
+python make_report.py ${out_prefix} ${out_prefix}.report.docx 0.2.0

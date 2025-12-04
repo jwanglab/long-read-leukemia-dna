@@ -53,6 +53,10 @@ def get_gene_annotation(gene, gff):
             if fields["Parent"] == gene_id:
                 if gene_name == "TP53" and fields["ID"] != "rna-NM_001126112.3": # this is the canonical transcript but is listed second
                     continue
+                if gene_name == "PAX5" and fields["ID"] != "rna-NM_016734.3":
+                    continue
+                if gene_name == "IKZF1" and fields["ID"] != "rna-NM_006060.6":
+                    continue
                 mrna_id = fields["ID"]
                 mrna_name = fields["Name"]
                 chrom = g[0]
@@ -166,6 +170,12 @@ targets = {
         (52,): "*5",
         (415,): "*2 or *3",
         (416,): "*4",
+    },
+    "PAX5": {
+        (239,): "p.Pro80Arg"
+    },
+    "IKZF1": {
+        (475,): "p.Asm159Tyr"
     }
 }
 
@@ -173,7 +183,7 @@ def main(bam_file, gene_names, refseq, gff, phase, maf_threshold):
     refseq = pyfastx.Fasta(refseq)
     af = pysam.AlignmentFile(bam_file, mode='rb')
     result = {}
-    for gene_name in targets:
+    for gene_name in (targets if gene_names is None or len(gene_names) == 0 else gene_names):
         depth, rpm, muts, phasings = compare(bam_file, gene_name, refseq, gff, af, phase, maf_threshold)
         muts = [m for m in muts if m[0] in [locus for loci in targets[gene_name] for locus in loci]]
         phased = {}
@@ -304,7 +314,7 @@ def compare(bam_file, gene_name, refseq, gff, af, do_phase, maf_threshold, verbo
     muts = []
     sys.stderr.write(f"{n_reads} reads aligned\n")
     if n_reads == 0:
-        return 0, 0, []
+        return 0, 0, [], {}
     sys.stderr.write("\n")
     sys.stderr.write("Insertions (>30% AF):\n")
     for i in range(len(insertions)):

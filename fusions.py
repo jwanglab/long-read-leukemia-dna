@@ -1,15 +1,11 @@
 from collections import defaultdict
 import json
-import math
 from datetime import datetime
 import sys
 import argparse
 import pysam
 import numpy
 import numpy.ma as ma
-import matplotlib
-matplotlib.use("Agg")
-from matplotlib import pyplot as plt
 
 class Reference:
     def __init__(self, chrom_list):
@@ -22,13 +18,18 @@ class Reference:
 hg38 = Reference(["NC_000001.11", "NC_000002.12", "NC_000003.12", "NC_000004.12", "NC_000005.10", "NC_000006.12", "NC_000007.14", "NC_000008.11", "NC_000009.12", "NC_000010.11", "NC_000011.10", "NC_000012.12", "NC_000013.11", "NC_000014.9", "NC_000015.10", "NC_000016.10", "NC_000017.11", "NC_000018.10", "NC_000019.10", "NC_000020.11", "NC_000021.9", "NC_000022.11", "NC_000023.11", "NC_000024.10"])
 t2t = Reference(["NC_060925.1", "NC_060926.1", "NC_060927.1", "NC_060928.1", "NC_060929.1", "NC_060930.1", "NC_060931.1", "NC_060932.1", "NC_060933.1", "NC_060934.1", "NC_060935.1", "NC_060936.1", "NC_060937.1", "NC_060938.1", "NC_060939.1", "NC_060940.1", "NC_060941.1", "NC_060942.1", "NC_060943.1", "NC_060944.1", "NC_060945.1", "NC_060946.1", "NC_060947.1", "NC_060948.1"])
 
-sbin_size = 1000000 # small bin size - has to be big enough to typically have >= 1 read, even at minimum coverage
-bin_size = 1000000
 min_anchor = 500
-gene_margin = 5000
+
+# CRLF2 upstream (toward centromere) can have breakpoints with P2RY8 up to ~10.3Kbp away, and with IGH up to 25Kbp away
+# all other genes will default to 5Kbp
+default_gene_margin = 5000
+gene_margin = {
+    "CRLF2": 25000
+}
+
 enrich_margin = 50000
 
-def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=False, eval_genes=[]):
+def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=False, eval_genes=[], one_sided=None, verbose=False):
 
     # check BED file for the appropriate reference to use
     test_chrom = open(bed_file).readline().split('\t')[0]
@@ -55,6 +56,24 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
             if chrom not in repeats:
                 repeats[chrom] = []
             repeats[chrom].append((st,en))
+
+    # sort and merge overlapping repeats, efficiently if we can
+    for c in repeats:
+        repeats[c].sort()
+        merged_repeats = []
+        i = 0
+        while i < len(repeats[c]):
+            j = i+1
+            while j < len(repeats[c]):
+                if repeats[c][j][0] <= repeats[c][i][1]:
+                    if repeats[c][j][1] > repeats[c][i][1]:
+                        repeats[c][i] = (repeats[c][i][0], repeats[c][j][1])
+                else:
+                    break
+                j += 1
+            merged_repeats.append(repeats[c][i])
+            i = j
+        repeats[c] = merged_repeats
 
     sys.stderr.write("Reading target genes...\n")
     # collect enriched gene set
@@ -83,7 +102,7 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
     report = {
         "meta": {},
         "qc": {},
-        "fusions": {},
+        "fusions": [],
     }
 
     sys.stderr.write("Reading BAM file(s)...\n")
@@ -145,11 +164,17 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
             if not run_full_analysis:
                 sys.stderr.write("  ...analyzing target gene regions only.\n")
                 # BAM is sorted, get just gene regions
-                regions = [af.fetch(ref.chroms[ch] if bam_names == "accessions" else ref.chrom_names[ch], st, en) for ch in genes for gene, st, en in genes[ch] if len(eval_genes) == 0 or gene.lower() in eval_genes]
+                regions = [af.fetch(ref.chroms[ch] if bam_names == "accessions" else ref.chrom_names[ch], st-gene_margin.get(gene, default_gene_margin), en+gene_margin.get(gene, default_gene_margin)) for ch in genes for gene, st, en in genes[ch] if len(eval_genes) == 0 or gene.lower() in eval_genes]
             else:
                 regions = [af.fetch(until_eof=True)]
 
         sys.stderr.write("Reading alignments...\n")
+        if one_sided is not None:
+            # a file with list of possible one-sided gene fusions was provided
+            one_sided = open(one_sided).read().strip().split('\n')
+            look_for_reads = set()
+        else:
+            one_sided = []
         for r in regions:
             for a in r:
                 if a.query_name != last:
@@ -165,45 +190,98 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
                     _, qs, qe, ts, te = fix_sam_coords(a)
                     if qlen is not None:
                         read_lengths[a.query_name] = qlen
+                    elif a.query_name in read_lengths:
+                        qlen = read_lengths[a.query_name]
                     for g in genes[c]:
-                        if min(g[2]+gene_margin, a.reference_end) - max(g[1]-gene_margin, a.reference_start) > min_anchor:
+                        if min(g[2]+gene_margin.get(g[0], default_gene_margin), a.reference_end) - max(g[1]-gene_margin.get(g[0], default_gene_margin), a.reference_start) > min_anchor:
                             found = True
+                            # a read aligned well to this target gene and has at least <min_anchor> unaligned that could be elsewhere
+                            if len(one_sided) > 0 and g[0] in one_sided: # qlen is an entirely unreliable way to guess if the read is long enough to also align elsewhere
+                                look_for_reads.add(a.query_name)
                             hits[a.query_name].append((a, (qs, qe, ts, te)))
-                    '''
-                    if not found:
-                        for w in set(a.reference_start//1000, a.reference_start//1000+1, a.reference_end//1000, a.reference_end//1000+1):
-                            extra_hits[(c, w)].append((a, (qs, qe, ts, te)))
-                    '''
-                    # TODO use extra_hits to count and fine-tine non-enriched hits when only one end is in a gene of interest
 
                     #-----------------
                     written = False
+                    on_target = False
                     for g in genes[c]:
                         rst = int(g[1])
                         ren = int(g[2])
                         if a.reference_start <= ren and a.reference_end >= rst:
+                            on_target = True
                             ovl = min(a.reference_end, ren) - max(a.reference_start, rst)
                             gene_covg[g] += ovl
                             total_ovl += ovl
                             total_on_target += a.reference_end-a.reference_start
                             reads_on_target += 1
-                        if a.reference_start <= ren+enrich_margin and a.reference_end >= rst-enrich_margin:
-                            if not written and outdir is not None:
-                                a, qs, qe, ts, te = fix_sam_coords(a)
-                                target_paf.write(f"{a.query_name}\t{qlen}\t{qs}\t{qe}\t{'-' if a.is_reverse else '+'}\t{a.reference_name}\t{af.get_reference_length(a.reference_name)}\t{ts}\t{te}\t-1\t-1\t255\n")
-                                written = True
-                    else:
+                        # write alignment in target genes only... at this point
+                        if outdir is not None and not written and a.reference_start <= ren+enrich_margin and a.reference_end >= rst-enrich_margin:
+                            a, qs, qe, ts, te = fix_sam_coords(a)
+                            target_paf.write(f"{a.query_name}\t{qlen}\t{qs}\t{qe}\t{'-' if a.is_reverse else '+'}\t{a.reference_name}\t{af.get_reference_length(a.reference_name)}\t{ts}\t{te}\t-1\t-1\t255\n")
+                            written = True
+                    if not on_target:
                         reads_off_target += 1
                         if a.query_length > 2000:
                             long_off_target += 1
                     total += a.reference_end - a.reference_start
                     #-----------------
 
+        # if one-sided fusion detection is requested, keep track of coordinates (in 1kbp bins) of auxiliary aligments to reads also aligning to our targets
+        if len(one_sided) > 0:
+            sys.stderr.write(f"{len(look_for_reads)} reads with possible one-sided rearrangements\n")
+            sys.stderr.write("Reading alignments again for one-sided fusions...\n")
+            af.reset() # back to beginning of the file
+            for a in af.fetch(until_eof=True):
+                # consider only one-sided reads aligning to target genes from this point
+                if a.query_name not in look_for_reads:
+                    continue
+                if a.query_name != last:
+                    qlen = None # we have to catch it because it will only be known in one of the several alignments in BAM file
+                    last = a.query_name
+
+                if qlen is None and a.query_length > 0:
+                    qlen = a.query_length
+
+                if a.reference_name in ref.chr_idx:
+                    c = ref.chr_idx[a.reference_name]
+                    _, qs, qe, ts, te = fix_sam_coords(a)
+                    if qlen is not None:
+                        read_lengths[a.query_name] = qlen
+                    on_target = False
+                    for g in genes[c]:
+                        if min(g[2]+gene_margin.get(g[0], default_gene_margin), a.reference_end) - max(g[1]-gene_margin.get(g[0], default_gene_margin), a.reference_start) > min_anchor:
+                            on_target = True
+                            if verbose:
+                                #sys.stderr.write("  on a target gene, skipping...\n");
+                                pass
+                            break
+                    # this is the on-target portion, we already got it...
+                    if on_target:
+                        continue
+                    if a.reference_end - a.reference_start > min_anchor:
+                        #for w in set(a.reference_start//1000, a.reference_start//1000+1, a.reference_end//1000, a.reference_end//1000+1):
+                        hits[a.query_name].append((a, (qs, qe, ts, te)))
+
+                    # write all of these too...
+                    if outdir is not None:
+                        a, qs, qe, ts, te = fix_sam_coords(a)
+                        target_paf.write(f"{a.query_name}\t{qlen}\t{qs}\t{qe}\t{'-' if a.is_reverse else '+'}\t{a.reference_name}\t{af.get_reference_length(a.reference_name)}\t{ts}\t{te}\t-1\t-1\t255\n")
+
+
     # filter duplex from hits list
+    '''
     to_remove = []
     for r in hits:
         if ';' in r: # a duplex read
             to_remove.extend(r.split(';'))
+    for r in to_remove:
+        if r in hits:
+            del hits[r]
+    '''
+    # remove only duplex reads themselves, leaving both strands
+    to_remove = []
+    for r in hits:
+        if ';' in r: # a duplex read
+            to_remove.append(r)
     for r in to_remove:
         if r in hits:
             del hits[r]
@@ -238,10 +316,12 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
     report["qc"]["reads_off_target"] = reads_off_target
     #print(f"{long_off_target} long off-target reads (>2Kbp)")
     report["qc"]["gene_coverage"] = {}
+    putative_cnvs = []
     for c in genes:
         for g in genes[c]:
             #print(f"{g[0]} -- {ref.chrom_names[c]}, {g[1]}-{g[2]}: {gene_covg[g]} nt aligned ({gene_covg[g]/(int(g[2])-int(g[1])):.2f}x covg)")
-            report["qc"]["gene_coverage"][g[0]] = gene_covg[g]/(int(g[2])-int(g[1]))
+            cov = gene_covg[g]/(int(g[2])-int(g[1]))
+            report["qc"]["gene_coverage"][g[0]] = cov
 
 
     # ----------------
@@ -254,84 +334,129 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
     print("---------------------------")
     '''
 
+    sys.stderr.write("Collecting hits...\n")
     fusions = {}
     for read in hits:
         overlaps = set()
-        found_fusion = False # flag to indicate whether a fusion has been marked so that only one is called for each read
+        found_fusions = [] # set of already found fusions for this read - a read may support multiple distinct fusions but only once each (to avoid the case when there are multiple alignments to the same two genes)
+        # this happens with DUX4* -IGH fusions where the same read may match several DUX4* cassette versions - it will be able to count once for each of them
         if read not in read_lengths:
             read_lengths[read] = hits[read][0][0].infer_query_length()
         qlen = read_lengths[read]
         for i in range(len(hits[read])):
             h0, (qs0, qe0, ts0, te0) = hits[read][i]
             c0 = ref.chr_idx[h0.reference_name]
+            # assign gene names instead of coordinates to those matching one of our known targets
+            for g in genes[c0]:
+                if min(g[2]+gene_margin.get(g[0], default_gene_margin), h0.reference_end) - max(g[1]-gene_margin.get(g[0], default_gene_margin), h0.reference_start) > min_anchor:
+                    end0s = [(c0, (g[1]+(g[2]-g[1])//2)//10000, g[0])]
+                    break
+            else:
+                end0s = [(c0,p) for p in range(ts0//10000, te0//10000+2)] # (chrom, loc[10kbp bin])
+
             for j in range(i+1, len(hits[read])):
                 h1, (qs1, qe1, ts1, te1) = hits[read][j]
                 c1 = ref.chr_idx[h1.reference_name]
-
-                g0 = (c0, (h0.reference_start+(h0.reference_end-h0.reference_start)//2)//1000000) # (chrom, loc[Mbp])
-                g1 = (c1, (h1.reference_start+(h1.reference_end-h1.reference_start)//2)//1000000)
-
-                # assign gene names instead of coordinates to those matching one of our known targets
-                for g in genes[c0]:
-                    if min(g[2]+gene_margin, h0.reference_end) - max(g[1]-gene_margin, h0.reference_start) > min_anchor:
-                        g0 = g[0]
                 for g in genes[c1]:
-                    if min(g[2]+gene_margin, h1.reference_end) - max(g[1]-gene_margin, h1.reference_start) > min_anchor:
-                        g1 = g[0]
+                    if min(g[2]+gene_margin.get(g[0], default_gene_margin), h1.reference_end) - max(g[1]-gene_margin.get(g[0], default_gene_margin), h1.reference_start) > min_anchor:
+                        # center of gene in 10Kbp bins, to check for breakpoint distance later
+                        end1s = [(c1, (g[1]+(g[2]-g[1])//2)//10000, g[0])]
+                        break
+                else:
+                    # both ends can't be coordinates, one has to be a known gene
+                    if len(end0s[0]) < 3:
+                        continue
+                    end1s = [(c1,p) for p in range(ts1//10000, te1//10000+2)] # (chrom, loc[10kbp bin])
 
-                if g0 == g1 or type(g0) != type("str") or type(g1) != type("str") or ("DUX4" in g0 and "DUX4" in g1):
-                    continue
+                # do these two loops in here so that we can add all ends of a found fusion, then break out and not look for any more fusions for this read
+                for g0 in end0s:
+                    for g1 in end1s:
+                        if g0 == g1 or (len(g0) >= 3 and "DUX4" in g0[2] and len(g1) >= 3 and "DUX4" in g1[2]) or (len(g0) >= 3 and "HOX" in g0[2] and len(g1) >= 3 and "HOX" in g1[2]):
+                            continue
+                        if (g0, g1) in found_fusions:
+                            continue
 
-                if min(qe0, qe1) - max(qs0, qs1) > 100: # they significantly overlap in the read
-                    #continue
-                    pass # not a hard rule right now
-                if c0 == c1 and min(h0.reference_end, h1.reference_end) - max(h0.reference_start, h1.reference_start) > -10000: # they are even close in the target
-                    continue
+                        # not a hard rule right now
+                        '''
+                        if min(qe0, qe1) - max(qs0, qs1) > 100: # they significantly overlap in the read
+                            continue
+                        '''
 
-                # check if either anchor overlaps a repeat element
-                h0_rng = numpy.zeros((h0.reference_end-h0.reference_start), dtype='u1')
-                h1_rng = numpy.zeros((h1.reference_end-h1.reference_start), dtype='u1')
-                for rp in repeats[c0]:
-                    g0_ovl = min(h0.reference_end, rp[1]) - max(h0.reference_start, rp[0])
-                    if g0_ovl > 0:
-                        h0_rng[max(rp[0]-h0.reference_start, 0):min(rp[1]-h0.reference_start, h0_rng.shape[0])] = 1
-                for rp in repeats[c1]:
-                    g1_ovl = min(h1.reference_end, rp[1]) - max(h1.reference_start, rp[0])
-                    if g1_ovl > 0:
-                        h1_rng[max(rp[0]-h1.reference_start, 0):min(rp[1]-h1.reference_start, h0_rng.shape[0])] = 1
-                g0_rp_overlap = h0_rng.sum()
-                g1_rp_overlap = h1_rng.sum()
+                        # TODO: somewhere around here...
+                        if c0 == c1 and min(h0.reference_end, h1.reference_end) - max(h0.reference_start, h1.reference_start) > -10000: # they are too close in the target
+                            continue
+                        #sys.stderr.write(f"{g0} : {g1}\n")
 
-                key = (g0,g1) if (type(g0) == type("str") and type(g0) != type(g1)) or (type(g0) == type(g1) and g0 < g1) else (g1,g0)
-                if not key in fusions:
-                    fusions[key] = [0,0,[]]
-                fusions[key][0] += 1
-                fusions[key][2].append((h0, h1))
+                        # check if either anchor overlaps a repeat element
+                        # homebrew binary search... finds the FIRST (sorted) overlapping repeat
+                        # yes, this is a lot, and we waste a few extra seconds on the initial repeat sorting and merging, but trust me - the naive way we did this before was an order of magnitude slower, and we have to do this n^2 times
+                        lo = 0
+                        hi = len(repeats[c0])
+                        while hi-lo > 1:
+                            mid = lo + (hi-lo)//2
+                            if h0.reference_start > repeats[c0][mid][1]:
+                                lo = mid+1
+                            else:
+                                hi = mid-1
+                        g0_ovl = 0
+                        if h0.reference_start < repeats[c0][lo][1] and h0.reference_end > repeats[c0][lo][0]:
+                            g0_ovl += (h0.reference_end if h0.reference_end < repeats[c0][lo][1] else repeats[c0][lo][1]) - (h0.reference_start if h0.reference_start > repeats[c0][lo][0] else repeats[c0][lo][0])
+                            lo += 1
+                            while lo < len(repeats[c0]) and h0.reference_start < repeats[c0][lo][1] and h0.reference_end > repeats[c0][lo][0]:
+                                g0_ovl += (h0.reference_end if h0.reference_end < repeats[c0][lo][1] else repeats[c0][lo][1]) - (h0.reference_start if h0.reference_start > repeats[c0][lo][0] else repeats[c0][lo][0])
+                                lo += 1
 
-                if h0.reference_end - h0.reference_start - g0_rp_overlap < min_anchor or h1.reference_end - h1.reference_start - g1_rp_overlap < min_anchor:
-                    # possible repetitive overlap
-                    fusions[key][1] += 1
+                        lo = 0
+                        hi = len(repeats[c1])
+                        while hi-lo > 1:
+                            mid = lo + (hi-lo)//2
+                            if h1.reference_start > repeats[c1][mid][1]:
+                                lo = mid+1
+                            else:
+                                hi = mid-1
+                        g1_ovl = 0
+                        if h1.reference_start < repeats[c1][lo][1] and h1.reference_end > repeats[c1][lo][0]:
+                            g1_ovl += (h1.reference_end if h1.reference_end < repeats[c1][lo][1] else repeats[c1][lo][1]) - (h1.reference_start if h1.reference_start > repeats[c1][lo][0] else repeats[c1][lo][0])
+                            lo += 1
+                            while lo < len(repeats[c1]) and h1.reference_start < repeats[c1][lo][1] and h1.reference_end > repeats[c1][lo][0]:
+                                g1_ovl += (h1.reference_end if h1.reference_end < repeats[c1][lo][1] else repeats[c1][lo][1]) - (h1.reference_start if h1.reference_start > repeats[c1][lo][0] else repeats[c1][lo][0])
+                                lo += 1
 
-                found_fusion = True
-                break
-            if found_fusion:
-                break
+                        # make key of genes in sorted order, and order alignments to match
+                        key, als = ((g0,g1), (h0,h1)) if g0 < g1 else ((g1,g0), (h1,h0))
+                        if not key in fusions:
+                            fusions[key] = [0,0,[]]
+                        fusions[key][0] += 1
+                        fusions[key][2].append(als)
+
+                        if h0.reference_end - h0.reference_start - g0_ovl < min_anchor or h1.reference_end - h1.reference_start - g1_ovl < min_anchor:
+                            # possible repetitive overlap
+                            fusions[key][1] += 1
+
+                        found_fusions.append((g0, g1))
+
+                #if found_fusion:
+                #    break
+            #if found_fusion:
+            #    break
 
     fusions = sorted([(f,fusions[f]) for f in fusions], key=lambda a:a[1][0])
     for f,(ct,rep,pairs) in fusions:
 
+        # we're not going to do cryptic duplex check because it doesn't catch them all and we require 3 reads anyway...
         dup = 0
+        '''
         # remove cryptic duplex reads if they are on the same channel within 100 rn ("read number" but not actual read number...) of each other, or 10 seconds if rn is unavailable
         i = 0
         while i < len(pairs):
             if not pairs[i][0].has_tag("ch"):
-                sys.stderr.write(f"WARNING: read missing ch tag: {pairs[i][0].query_name}\n")
+                #sys.stderr.write(f"WARNING: read missing ch tag: {pairs[i][0].query_name}\n")
                 i += 1
                 continue
             j = i+1
             while j < len(pairs):
                 if not pairs[j][0].has_tag("ch"):
-                    sys.stderr.write(f"WARNING: read missing ch tag: {pairs[j][0].query_name}\n")
+                    #sys.stderr.write(f"WARNING: read missing ch tag: {pairs[j][0].query_name}\n")
                     j += 1
                     continue
                 if pairs[i][0].get_tag("ch") == pairs[j][0].get_tag("ch"):
@@ -357,10 +482,12 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
                         diff = (st1 - (st0 + du0)) if st0 < st1 else (st0 - (st1 + du1))
                     # cryptic duplex are expected to be within 100 "read number" or 10 seconds, conservatively
                     if (diff is None and abs(rn0 - rn1) < 100) or (diff is not None and diff < 10):
+                        """
                         if diff is None:
                             sys.stderr.write(f"Detected cryptic duplex: {pairs[i][0].query_name} ch {pairs[i][0].get_tag('ch')} rn {pairs[i][0].get_tag('rn')} ~ {pairs[j][0].query_name} ch {pairs[j][0].get_tag('ch')} rn {pairs[j][0].get_tag('rn')}\n")
                         else:
                             sys.stderr.write(f"Detected cryptic duplex: {pairs[i][0].query_name} ch {pairs[i][0].get_tag('ch')} time {st0 + (pairs[i][0].get_tag('du') if st0<st1 else 0)} ~ {pairs[j][0].query_name} ch {pairs[j][0].get_tag('ch')} time {st1 + (pairs[j][0].get_tag('du') if st1<st0 else 0)}\n")
+                        """
                         dup += 1
                         # we're going to semi-arbitrarily get rid of the second reads of the putative duplex
                         # I think it's defensible because it's either the second in the file (the back strand), or the second in the alignment, so probably covers less genome
@@ -368,16 +495,70 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
                         break # only one duplex partner can exist, don't need to keep looking
                 j += 1
             i += 1
+        '''
 
         #print(f, f"{rep}/{ct-dup} deduplexed possibly in repetitive regions")
-        report["fusions"][f"{f[0]}-{f[1]}"] = {
-            "supporting_reads": ct,
-            "duplicate_reads": dup,
-            "repetitive_reads": rep
-        }
         if len(pairs) >= 1:
-            bpt = find_breakpoint(f[0], f[1], pairs)
+            bpts = find_breakpoint(f[0], f[1], pairs)
+            if verbose:
+                sys.stderr.write(f"\n{f[0]}\n{f[1]}\n{bpts}\n")
 
+            # we are NOT filtering DUX4 alignments for breakpoint consistency - this is challenging and overlay conservative for DUX4 since reads align arbitrarily to various DUX4 cassettes
+            if len(f[0]) > 2 and "DUX4" in f[0][2] or len(f[1]) > 2 and "DUX4" in f[1][2]:
+                # filter out if less than 3 supporting reads total, regardless of breakpoint
+                if sum([len(seqs) for (chr0, bpt0, dir0, chr1, bpt1, dir1, seqs) in bpts]) < 3:
+                    continue
+            # all other fusions must have 3+ reads supporting the same breakpoint
+            else:
+                bpts = [(chr0, bpt0, dir0, chr1, bpt1, dir1, seqs) for (chr0, bpt0, dir0, chr1, bpt1, dir1, seqs) in bpts if len(seqs) >=3]
+
+            # filter out breakpoints that do not match fusion partner window
+            # f[0] and f[1] are loci, either (chr, pos[10Kbp window]) or (chr, pos, gene)
+            if len(f[0]) < 3: # no known gene
+                bpts = [(chr0, bpt0, dir0, chr1, bpt1, dir1, seqs) for (chr0, bpt0, dir0, chr1, bpt1, dir1, seqs) in bpts if bpt0//10000 == f[0][1]]
+            if len(f[1]) < 3:
+                bpts = [(chr0, bpt0, dir0, chr1, bpt1, dir1, seqs) for (chr0, bpt0, dir0, chr1, bpt1, dir1, seqs) in bpts if bpt1//10000 == f[1][1]]
+
+            if len(bpts) > 0:
+                if verbose:
+                    sys.stderr.write(f"{f[0]}-{f[1]}\n")
+                    sys.stderr.write(f"    supporting_reads: {ct}\n")
+                    sys.stderr.write(f"    duplicate_reads: {dup}\n")
+                    sys.stderr.write(f"    repetitive_reads: {rep}\n")
+                    for chr0, bpt0, dir0, chr1, bpt1, dir1, seqs in bpts:
+                        sys.stderr.write(f"    breakpoint: {len(seqs)} reads\n")
+                        sys.stderr.write(f"        {f[0]} @ {chr0}: {bpt0} {dir0}\n")
+                        sys.stderr.write(f"        {f[1]} @ {chr1}: {bpt1} {dir1}\n")
+                report["fusions"].append({
+                    "gene1": {
+                        "name": f[0][2] if len(f[0]) > 2 else "",
+                        "chr": ref.chrom_names[f[0][0]],
+                        "pos": f[0][1]
+                    },
+                    "gene2": {
+                        "name": f[1][2] if len(f[1]) > 2 else "",
+                        "chr": ref.chrom_names[f[1][0]],
+                        "pos": f[1][1]
+                    },
+                    "supporting_reads": ct,
+                    "duplicate_reads": dup,
+                    "repetitive_reads": rep,
+                    "breakpoints": [
+                        {
+                            "gene0_name": f[0],
+                            "gene0_chr": chr0,
+                            "gene0_pos": bpt0,
+                            "gene0_dir": dir0,
+                            "gene1_name": f[1],
+                            "gene1_chr": chr1,
+                            "gene1_pos": bpt1,
+                            "gene1_dir": dir1,
+                            "n_reads": len(seqs)
+                        } for chr0, bpt0, dir0, chr1, bpt1, dir1, seqs in bpts
+                    ]
+                })
+
+    sys.stderr.write(json.dumps(report, indent=1)+"\n")
     print(json.dumps(report))
 
 
@@ -417,16 +598,19 @@ def find_breakpoint(g0, g1, pairs):
             #print(f"  {g0} {a0.reference_name} {g0_bpt} :: {insert_nt} nt :: {g1} {a1.reference_name} {g1_bpt}")
         g0_dir = '|->' if (qe0 > qe1) == (not a0.is_reverse) else '<-|'
         g1_dir = '|->' if (qe1 > qe0) == (not a1.is_reverse) else '<-|'
-        for bpt0, dir0, bpt1, dir1, seqs in breakpoint_clusters:
-            if abs(bpt0 - g0_bpt) < 20 and abs(bpt1 - g1_bpt) < 20 and g0_dir == dir0 and g1_dir == dir1:
+        breakpoint_margin = 50
+        for chr0, bpt0, dir0, chr1, bpt1, dir1, seqs in breakpoint_clusters:
+            if abs(bpt0 - g0_bpt) < breakpoint_margin and abs(bpt1 - g1_bpt) < breakpoint_margin and g0_dir == dir0 and g1_dir == dir1:
                 seqs.append((a0.query_sequence if a0.query_sequence is not None else a1.query_sequence, a0, a1))
                 break
         else:
-            breakpoint_clusters.append((g0_bpt, g0_dir, g1_bpt, g1_dir, [(a0.query_sequence if a0.query_sequence is not None else a1.query_sequence, a0, a1)]))
+            breakpoint_clusters.append((a0.reference_name, g0_bpt, g0_dir, a1.reference_name, g1_bpt, g1_dir, [(a0.query_sequence if a0.query_sequence is not None else a1.query_sequence, a0, a1)]))
 
-    for bpt0, dir0, bpt1, dir1, seqs in breakpoint_clusters:
-        #print("  ", g0, bpt0, dir0, "::", g1, bpt1, dir1, f"{len(seqs)} reads")
-        pass
+    '''
+    for chr0, bpt0, dir0, chr1, bpt1, dir1, seqs in breakpoint_clusters:
+        print("  ", g0, chr0, bpt0, dir0, "::", g1, chr1, bpt1, dir1, f"{len(seqs)} reads")
+    '''
+    return breakpoint_clusters
 
 # PAF and BAM files store query coordinates differently - BAM have to be converted back to the original strand coordinates before comparison
 def fix_sam_coords(aln):
@@ -456,5 +640,7 @@ if __name__ == "__main__":
     parser.add_argument("--outdir", help="Output directory for bigger results")
     parser.add_argument("--full", help="Assess full file, including off-target reads, in sorted BAM", action="store_true", default=False)
     parser.add_argument("--genes", help="Evaluate only the given genes (must be in the enrichment set)", nargs='+')
+    parser.add_argument("--one_sided", help="Given a file with a list of genes, searches for 'one-sided' fusions with these genes - will be slower")
+    parser.add_argument("--verbose", help="Print a huge amount of extra information", action="store_true", default=False)
     args = parser.parse_args()
-    main(args.bams, args.bed, args.repeats, args.outdir, args.full, [g.lower() for g in args.genes] if args.genes is not None else [])
+    main(args.bams, args.bed, args.repeats, args.outdir, args.full, [g.lower() for g in args.genes] if args.genes is not None else [], args.one_sided, args.verbose)

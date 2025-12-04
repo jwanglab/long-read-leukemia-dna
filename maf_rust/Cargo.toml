@@ -1,0 +1,7 @@
+[package]
+name = "nano_maf"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rust-htslib = "0.46.0"

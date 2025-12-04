@@ -107,7 +107,7 @@ def get_gene_annotation(gene, gff):
                     cds.append((int(g[3]), int(g[4]))) # 1-indexed start and end, both inclusive
     return (gene_id, gene_name, mrna_id, mrna_name, chrom, gene_strand, cds)
 
-def main(af, chrom, st, en, binsize, outfig, ymax=None):
+def main(af, chrom, st, en, binsize, outfig, ymax=None, anno=[]):
     c = chrom
 
     # convert chrom to appropriate accession/name
@@ -137,17 +137,20 @@ def main(af, chrom, st, en, binsize, outfig, ymax=None):
     for a in af.fetch(chrom, st, en):
         if a.is_secondary: # use only primary alignments
             continue
+        '''
         if binsize == 0:
           covg[max(a.reference_start,st)-st:min(a.reference_end,en)-st+1] += 1
         else:
           mid = a.reference_start + (a.reference_end-a.reference_start)//2
           if mid < en and mid > st:
             covg[mid//binsize - st//binsize] += 1
+        '''
+        covg[(a.reference_start - st)//binsize] += 1
 
     if binsize == 0:
       plt.scatter(range(st,en+1), covg, s=3)
     else:
-      #plt.plot(range(st//binsize * binsize, (en//binsize+1)*binsize, binsize), covg)
+      plt.plot(range(st//binsize * binsize, (en//binsize+1)*binsize, binsize), covg, alpha=0.2)
       plt.scatter(range(st//binsize * binsize, (en//binsize+1)*binsize, binsize), covg, s=3)
     plt.xlim((st,en))
     plt.ylim((0,plt.ylim()[1] if ymax is None else ymax))
@@ -168,6 +171,13 @@ def main(af, chrom, st, en, binsize, outfig, ymax=None):
         div *= 1000
     unit = {1: "bp", 1000: "Kbp", 1000000: "Mbp", 1000000000: "Gbp"}[div]
     plt.xticks(ticks, [f"{(t/div) if t//div * div != t else int(t//div)} {unit}" for t in ticks], rotation=45)
+    for a in anno:
+        region, caption = a.split('/')
+        st, en = (int(region[:region.index('-')]), int(region[region.index('-')+1:]))
+        plt.plot([st, en], [plt.ylim()[1]*0.93, plt.ylim()[1]*0.93], color="red")
+        plt.plot([st+(en-st)//2, st+(en-st)//2], [plt.ylim()[1]*0.93, plt.ylim()[1]*0.95], color="red")
+        plt.text(st+(en-st)//2, plt.ylim()[1]*0.96, caption, color="red", horizontalalignment="center", style="italic")
+        print(st+(en-st)//2, plt.ylim()[1]*0.96, caption)
     plt.tight_layout()
     plt.savefig(outfig)
 
@@ -180,6 +190,7 @@ if __name__ == "__main__":
     parser.add_argument("fig", help="Filename for plot/figure")
     parser.add_argument("--binsize", help="Bin width if binning read counts", type=int, default=0)
     parser.add_argument("--ymax", help="Y axis maximum", type=int, default=None)
+    parser.add_argument("--anno", help="Draw region annotation", nargs='+', default=[])
     args = parser.parse_args()
 
     # parse region string
@@ -231,4 +242,5 @@ if __name__ == "__main__":
                         end = hg38_chroms[chrom_sets[2][chroms.index(chrom)]][1]
                     break
 
-    main(af, chrom, start, end, args.binsize, args.fig, args.ymax)
+    af = pysam.AlignmentFile(args.bam, mode='rb')
+    main(af, chrom, start, end, args.binsize, args.fig, args.ymax, args.anno)
