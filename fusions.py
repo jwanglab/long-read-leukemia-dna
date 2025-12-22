@@ -78,11 +78,13 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
     sys.stderr.write("Reading target genes...\n")
     # collect enriched gene set
     genes = defaultdict(list)
+    gene_lookup = {}
     for line in open(bed_file):
         parts = line.strip().split('\t')
         chrom, st, en, gene = parts[:4]
         chrom = ref.chroms.index(chrom)
         genes[chrom].append((gene, int(st), int(en)))
+        gene_lookup[gene] = (chrom, int(st), int(en))
 
     last = None
     hits = defaultdict(list)
@@ -105,6 +107,11 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
         "fusions": [],
     }
 
+    if one_sided is not None:
+        # a file with list of possible one-sided gene fusions was provided
+        one_sided = open(one_sided).read().strip().split('\n')
+    else:
+        one_sided = []
     sys.stderr.write("Reading BAM file(s)...\n")
 
     for bam_file in bam_files:
@@ -169,12 +176,8 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
                 regions = [af.fetch(until_eof=True)]
 
         sys.stderr.write("Reading alignments...\n")
-        if one_sided is not None:
-            # a file with list of possible one-sided gene fusions was provided
-            one_sided = open(one_sided).read().strip().split('\n')
-            look_for_reads = set()
-        else:
-            one_sided = []
+        # will keep reads with one-sided hits from this bam file
+        look_for_reads = set()
         for r in regions:
             for a in r:
                 if a.query_name != last:
@@ -186,7 +189,6 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
 
                 if a.reference_name in ref.chr_idx:
                     c = ref.chr_idx[a.reference_name]
-                    found = False
                     _, qs, qe, ts, te = fix_sam_coords(a)
                     if qlen is not None:
                         read_lengths[a.query_name] = qlen
@@ -194,7 +196,6 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
                         qlen = read_lengths[a.query_name]
                     for g in genes[c]:
                         if min(g[2]+gene_margin.get(g[0], default_gene_margin), a.reference_end) - max(g[1]-gene_margin.get(g[0], default_gene_margin), a.reference_start) > min_anchor:
-                            found = True
                             # a read aligned well to this target gene and has at least <min_anchor> unaligned that could be elsewhere
                             if len(one_sided) > 0 and g[0] in one_sided: # qlen is an entirely unreliable way to guess if the read is long enough to also align elsewhere
                                 look_for_reads.add(a.query_name)
@@ -215,7 +216,6 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
                             reads_on_target += 1
                         # write alignment in target genes only... at this point
                         if outdir is not None and not written and a.reference_start <= ren+enrich_margin and a.reference_end >= rst-enrich_margin:
-                            a, qs, qe, ts, te = fix_sam_coords(a)
                             target_paf.write(f"{a.query_name}\t{qlen}\t{qs}\t{qe}\t{'-' if a.is_reverse else '+'}\t{a.reference_name}\t{af.get_reference_length(a.reference_name)}\t{ts}\t{te}\t-1\t-1\t255\n")
                             written = True
                     if not on_target:
@@ -501,7 +501,7 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
         if len(pairs) >= 1:
             bpts = find_breakpoint(f[0], f[1], pairs)
             if verbose:
-                sys.stderr.write(f"\n{f[0]}\n{f[1]}\n{bpts}\n")
+                sys.stderr.write(f"\n{f[0]}\n{f[1]}\n{[(chr0, bpt0, dir0, chr1, bpt1, dir1, len(seqs)) for (chr0, bpt0, dir0, chr1, bpt1, dir1, seqs) in bpts]}\n")
 
             # we are NOT filtering DUX4 alignments for breakpoint consistency - this is challenging and overlay conservative for DUX4 since reads align arbitrarily to various DUX4 cassettes
             if len(f[0]) > 2 and "DUX4" in f[0][2] or len(f[1]) > 2 and "DUX4" in f[1][2]:
@@ -516,8 +516,17 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
             # f[0] and f[1] are loci, either (chr, pos[10Kbp window]) or (chr, pos, gene)
             if len(f[0]) < 3: # no known gene
                 bpts = [(chr0, bpt0, dir0, chr1, bpt1, dir1, seqs) for (chr0, bpt0, dir0, chr1, bpt1, dir1, seqs) in bpts if bpt0//10000 == f[0][1]]
+            else:
+                # make sure the identified breakpoint is actually in our gene boundaries, rather than just the other end of the reads
+                # (this happens in CSF1R/PDGFRB)
+                bpts = [(chr0, bpt0, dir0, chr1, bpt1, dir1, seqs) for (chr0, bpt0, dir0, chr1, bpt1, dir1, seqs) in bpts if bpt0 > gene_lookup[f[0][2]][1] - gene_margin.get(f[0][2], default_gene_margin) and bpt0 < gene_lookup[f[0][2]][2] + gene_margin.get(f[0][2], default_gene_margin)]
             if len(f[1]) < 3:
                 bpts = [(chr0, bpt0, dir0, chr1, bpt1, dir1, seqs) for (chr0, bpt0, dir0, chr1, bpt1, dir1, seqs) in bpts if bpt1//10000 == f[1][1]]
+            else:
+                bpts = [(chr0, bpt0, dir0, chr1, bpt1, dir1, seqs) for (chr0, bpt0, dir0, chr1, bpt1, dir1, seqs) in bpts if bpt1 > gene_lookup[f[1][2]][1] - gene_margin.get(f[1][2], default_gene_margin) and bpt1 < gene_lookup[f[1][2]][2] + gene_margin.get(f[1][2], default_gene_margin)]
+
+            if verbose:
+                sys.stderr.write(f"  {len(bpts)} filtered breakpoints\n")
 
             if len(bpts) > 0:
                 if verbose:

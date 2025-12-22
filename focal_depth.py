@@ -137,15 +137,12 @@ def main(af, chrom, st, en, binsize, outfig, ymax=None, anno=[]):
     for a in af.fetch(chrom, st, en):
         if a.is_secondary: # use only primary alignments
             continue
-        '''
+
         if binsize == 0:
           covg[max(a.reference_start,st)-st:min(a.reference_end,en)-st+1] += 1
         else:
-          mid = a.reference_start + (a.reference_end-a.reference_start)//2
-          if mid < en and mid > st:
-            covg[mid//binsize - st//binsize] += 1
-        '''
-        covg[(a.reference_start - st)//binsize] += 1
+          if a.reference_start > st and a.reference_start < en:
+            covg[(a.reference_start - st)//binsize] += 1
 
     if binsize == 0:
       plt.scatter(range(st,en+1), covg, s=3)

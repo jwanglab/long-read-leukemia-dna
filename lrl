@@ -75,14 +75,18 @@ if [ ! -s ${out_prefix}/itd.json ]; then
 fi
 
 # CNVs
-if [ ! -s ${out_prefix}/cnvs.json ]; then
-  python call_CNVs.py $bam $bed ${out_prefix}/coverage_1Mbp_bins.tsv ${out_prefix}/fusions.json > ${out_prefix}/cnv.json
+if [ ! -s ${out_prefix}/cnv.json ]; then
+  python call_CNVs.py $bam $bed ${out_prefix}/coverage_1Mbp_bins.tsv ${out_prefix}/fusions.json ${out_prefix}/karyotype.json > ${out_prefix}/cnv.json
+fi
+if [ ! -s ${out_prefix}/chr21_covg.png ]; then
+  # 10962853 is the end of the acrocentromere, take an extra 0.5Mbp to get well away
+  python focal_depth.py $bam $gff chr21:11462853-45090682 ${out_prefix}/chr21_RUNX1_covg.png --anno 33170406-33432142/RUNX1 --binsize 100000
 fi
 
 # SNVs
 # usage: Identify coding variation in nanopore adaptive sampling BAM file [-h] [--genes GENES [GENES ...]] [--phase] bam ref gff
 if [ ! -s ${out_prefix}/genotypes.json ]; then
-  python targeted_SNVs.py $bam $ref $gff --phase > ${out_prefix}/genotypes.json
+  python targeted_SNVs.py $ref $gff $bam --phase > ${out_prefix}/genotypes.json
 fi
 
-python make_report.py ${out_prefix} ${out_prefix}.report.docx 0.2.0
+python make_report.py ${out_prefix} ${out_prefix}.report.docx 0.2.1

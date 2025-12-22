@@ -179,12 +179,11 @@ targets = {
     }
 }
 
-def main(bam_file, gene_names, refseq, gff, phase, maf_threshold):
+def main(bam_files, gene_names, refseq, gff, phase, maf_threshold):
     refseq = pyfastx.Fasta(refseq)
-    af = pysam.AlignmentFile(bam_file, mode='rb')
     result = {}
     for gene_name in (targets if gene_names is None or len(gene_names) == 0 else gene_names):
-        depth, rpm, muts, phasings = compare(bam_file, gene_name, refseq, gff, af, phase, maf_threshold)
+        depth, rpm, muts, phasings = compare(bam_files, gene_name, refseq, gff, phase, maf_threshold)
         muts = [m for m in muts if m[0] in [locus for loci in targets[gene_name] for locus in loci]]
         phased = {}
         for i in range(len(muts)):
@@ -234,7 +233,7 @@ def main(bam_file, gene_names, refseq, gff, phase, maf_threshold):
 
     print(json.dumps(result, indent=2))
 
-def compare(bam_file, gene_name, refseq, gff, af, do_phase, maf_threshold, verbose=False):
+def compare(bam_files, gene_name, refseq, gff, do_phase, maf_threshold, verbose=False):
     gene_id, gene_name, mrna_id, mrna_name, chrom, gene_strand, cds = get_gene_annotation(gene_name, gff)
     cds_len = 0
     if verbose:
@@ -251,8 +250,10 @@ def compare(bam_file, gene_name, refseq, gff, af, do_phase, maf_threshold, verbo
 
     bam_chrom = chrom
     ref = t2t
+    af = pysam.AlignmentFile(bam_files[0], mode='rb')
     if chrom not in af.references:
         bam_chrom = ref.chrom_names[ref.chroms.index(chrom)]
+    af.close()
 
     reads = {} # dict of colinear CDS per read - for phasing
     covg = np.zeros((cds_len, 7)) # (covg, A, C, G, T, N, del)
@@ -263,49 +264,55 @@ def compare(bam_file, gene_name, refseq, gff, af, do_phase, maf_threshold, verbo
     duplex_accs = []
     n_reads = 0
     read_starts = 0
-    for alignment in af.fetch(bam_chrom, cds[0][0]-1, cds[-1][1]):
-        if alignment.reference_start >= cds[0][0]-1 and alignment.reference_start <= cds[-1][1]:
-            read_starts += 1
+    for bam_file in bam_files:
+        af = pysam.AlignmentFile(bam_file, mode='rb')
+        for alignment in af.fetch(bam_chrom, cds[0][0]-1, cds[-1][1]):
+            if alignment.reference_start >= cds[0][0]-1 and alignment.reference_start <= cds[-1][1]:
+                read_starts += 1
+        af.close()
     for c in cds:
         st = c[0]-1 # pysam pileup() uses 0-based indexing
         en = c[1]
-        for alignment in af.fetch(bam_chrom, st, en):
-            if not alignment.query_name in reads:
-                n_reads += 1
-                reads[alignment.query_name] = [' ']*cds_len
-                ps = alignment.get_cigar_stats()[0]
-                # pileup stats: MIDNSHP=XB + NM (edits)
-                acc = (sum(ps[:10]) - ps[10]) / sum(ps[:10])
-                if ';' in alignment.query_name:
-                    duplex_accs.append((ps[10], sum(ps[:10]), ps[1]+ps[2])) # NM (edits), total alignment length, indels
-                else:
-                    simplex_accs.append((ps[10], sum(ps[:10]), ps[1]+ps[2]))
-            if alignment.query_sequence is None:
-                sys.stderr.write(f"read '{alignment.query_name}' has no sequence\n")
-                continue
-            ins = ""
-            last_t = None
-            for (q,t) in alignment.get_aligned_pairs():
-                if (t is not None and t >= en) or (t is None and last_t is not None and last_t+len(ins)+1 >= en):
-                    break;
-                if t is None:
-                    if last_t is not None and last_t >= st:
-                        ins += " ACGTN-"[(" ACGTN" if gene_strand == '+' else " TGCAN").index(alignment.query_sequence[q])]
-                else:
-                    if t >= st:
-                        cds_pos = offset + t - st
-                        if gene_strand == '-': #alignment.is_forward != (gene_strand == '+'):
-                            cds_pos = cds_len - cds_pos - 1
-                        # complement here if necessary
-                        #al = 6 if q is None else (" ACGTN" if alignment.is_forward == (gene_strand == '+') else " TGCAN").index(alignment.query_sequence[q])
-                        al = 6 if q is None else (" ACGTN" if gene_strand == '+' else " TGCAN").index(alignment.query_sequence[q])
-                        reads[alignment.query_name][cds_pos] = " ACGTN-"[al]
-                        covg[cds_pos,0] += 1 # total coverage
-                        covg[cds_pos,al] += 1
-                        if ins != "":
-                            insertions[cds_pos][ins] += 1
-                            ins = ""
-                    last_t = t
+        for bam_file in bam_files:
+            af = pysam.AlignmentFile(bam_file, mode='rb')
+            for alignment in af.fetch(bam_chrom, st, en):
+                if not alignment.query_name in reads:
+                    n_reads += 1
+                    reads[alignment.query_name] = [' ']*cds_len
+                    ps = alignment.get_cigar_stats()[0]
+                    # pileup stats: MIDNSHP=XB + NM (edits)
+                    acc = (sum(ps[:10]) - ps[10]) / sum(ps[:10])
+                    if ';' in alignment.query_name:
+                        duplex_accs.append((ps[10], sum(ps[:10]), ps[1]+ps[2])) # NM (edits), total alignment length, indels
+                    else:
+                        simplex_accs.append((ps[10], sum(ps[:10]), ps[1]+ps[2]))
+                if alignment.query_sequence is None:
+                    sys.stderr.write(f"read '{alignment.query_name}' has no sequence\n")
+                    continue
+                ins = ""
+                last_t = None
+                for (q,t) in alignment.get_aligned_pairs():
+                    if (t is not None and t >= en) or (t is None and last_t is not None and last_t+len(ins)+1 >= en):
+                        break;
+                    if t is None:
+                        if last_t is not None and last_t >= st:
+                            ins += " ACGTN-"[(" ACGTN" if gene_strand == '+' else " TGCAN").index(alignment.query_sequence[q])]
+                    else:
+                        if t >= st:
+                            cds_pos = offset + t - st
+                            if gene_strand == '-': #alignment.is_forward != (gene_strand == '+'):
+                                cds_pos = cds_len - cds_pos - 1
+                            # complement here if necessary
+                            #al = 6 if q is None else (" ACGTN" if alignment.is_forward == (gene_strand == '+') else " TGCAN").index(alignment.query_sequence[q])
+                            al = 6 if q is None else (" ACGTN" if gene_strand == '+' else " TGCAN").index(alignment.query_sequence[q])
+                            reads[alignment.query_name][cds_pos] = " ACGTN-"[al]
+                            covg[cds_pos,0] += 1 # total coverage
+                            covg[cds_pos,al] += 1
+                            if ins != "":
+                                insertions[cds_pos][ins] += 1
+                                ins = ""
+                        last_t = t
+            af.close()
         ref_cds += refseq.fetch(chrom, (c[0], c[1])).upper()
         offset += (en-st)
     if gene_strand == '-':
@@ -446,9 +453,9 @@ def compare(bam_file, gene_name, refseq, gff, af, do_phase, maf_threshold, verbo
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Identify coding variation in nanopore adaptive sampling BAM file")
-    parser.add_argument("bam", help="BAM of reads to hg38 (mm2 -x map-ont)")
     parser.add_argument("ref", help="Reference FASTA file")
     parser.add_argument("gff", help="Matching reference annotation GFF")
+    parser.add_argument("bam", help="BAM files (aligned, sorted, indexed)", nargs='+')
     parser.add_argument("--genes", help="Gene name", nargs='+')
     parser.add_argument("--maf", help="Minimum MAF to report (default: 0.3)", type=float, default=0.3)
     parser.add_argument("--phase", help="Perform variant phasing where possible", action="store_true", default=False)

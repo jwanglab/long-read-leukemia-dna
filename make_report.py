@@ -4,6 +4,8 @@ import argparse
 import datetime
 from docx import Document
 from docx.shared import Inches, RGBColor
+from docx.oxml.shared import OxmlElement
+from docx.oxml.ns import qn
 
 class Reference:
     def __init__(self, chrom_list):
@@ -51,6 +53,26 @@ def bold(cells):
             for r in p.runs:
                 r.font.bold = True
 
+def insertHR(paragraph):
+    p = paragraph._p  # p is the <w:p> XML element
+    pPr = p.get_or_add_pPr()
+    pBdr = OxmlElement('w:pBdr')
+    pPr.insert_element_before(pBdr,
+        'w:shd', 'w:tabs', 'w:suppressAutoHyphens', 'w:kinsoku', 'w:wordWrap',
+        'w:overflowPunct', 'w:topLinePunct', 'w:autoSpaceDE', 'w:autoSpaceDN',
+        'w:bidi', 'w:adjustRightInd', 'w:snapToGrid', 'w:spacing', 'w:ind',
+        'w:contextualSpacing', 'w:mirrorIndents', 'w:suppressOverlap', 'w:jc',
+        'w:textDirection', 'w:textAlignment', 'w:textboxTightWrap',
+        'w:outlineLvl', 'w:divId', 'w:cnfStyle', 'w:rPr', 'w:sectPr',
+        'w:pPrChange'
+    )
+    bottom = OxmlElement('w:bottom')
+    bottom.set(qn('w:val'), 'single')
+    bottom.set(qn('w:sz'), '6')
+    bottom.set(qn('w:space'), '1')
+    bottom.set(qn('w:color'), 'auto')
+    pBdr.append(bottom)
+
 def main(run_dir, outfile, version):
     document = Document()
     sections = document.sections
@@ -96,7 +118,7 @@ def main(run_dir, outfile, version):
         g1 = fus["gene2"]
         if "name" in g0 and "name" in g1 and ((g0["name"], g1["name"]) in blacklist or (g1["name"], g0["name"]) in blacklist):
             continue
-        if fus["supporting_reads"]-fus["duplicate_reads"] < 3:
+        if fus["supporting_reads"] < 3:
             continue
         for b in fus["breakpoints"]:
             if b["n_reads"] > 2 or "DUX4" in g0["name"] or "DUX4" in g1["name"]: # DUX4 is excused from the breakpoint filter
@@ -105,7 +127,7 @@ def main(run_dir, outfile, version):
         '''
         "NOL4L-PAX5": {
             "supporting_reads": 15,
-            "duplicate_reads": 0,
+            "duplicate_reads": 0, # we don't call dups anymore, so should always be 0
             "repetitive_reads": 7,
             "breakpoints": [
                 {
@@ -123,28 +145,29 @@ def main(run_dir, outfile, version):
         }
         '''
 
-    if len(filtered_fusions) > 0:
-        table = document.add_table(rows=1, cols=6)
+    two_sided = [f for f in filtered_fusions if len(f["gene1"]["name"]) > 0 and len(f["gene1"]["name"]) > 0]
+    one_sided = [f for f in filtered_fusions if len(f["gene1"]["name"]) == 0 or len(f["gene1"]["name"]) == 0]
+
+    if len(two_sided) > 0:
+        table = document.add_table(rows=1, cols=4)
         hdr_cells = table.rows[0].cells
-        hdr_cells[0].text = 'Gene 1'
-        hdr_cells[1].text = 'Gene 2'
-        hdr_cells[2].text = 'Deduplicated reads'
-        hdr_cells[3].text = 'Repetitive reads'
-        hdr_cells[4].text = 'Supporting reads'
-        hdr_cells[5].text = 'Breakpoint(s)(?)'
+        hdr_cells[0].text = 'Gene/region 1'
+        hdr_cells[1].text = 'Gene/region 2'
+        hdr_cells[2].text = 'Supporting reads'
+        hdr_cells[3].text = 'Breakpoint(s)'
         bold(hdr_cells)
-        for fus in filtered_fusions:
+        for fus in two_sided:
             g0 = fus["gene1"]
             g1 = fus["gene2"]
 
             row_cells = table.add_row().cells
             row_cells[0].text = f"{g0['name'] if 'name' in g0 else ''} ({g0['chr']} ~{g0['pos']/100:.2f}Mbp)"
             row_cells[1].text = f"{g1['name'] if 'name' in g1 else ''} ({g1['chr']} ~{g1['pos']/100:.2f}Mbp)"
-            row_cells[2].text = f'{fus["supporting_reads"]-fus["duplicate_reads"]}'
-            row_cells[3].text = f'{fus["repetitive_reads"]}'
-            row_cells[4].text = f'{fus["supporting_reads"]-fus["duplicate_reads"]-fus["repetitive_reads"]}'
-            if fus["supporting_reads"]-fus["duplicate_reads"]-fus["repetitive_reads"] >= 3:
-                bold([row_cells[4]])
+            row_cells[2].text = f'{fus["supporting_reads"]}'
+            if fus["supporting_reads"] >= 3:
+                bold([row_cells[2]])
+            breakpoints = fus["breakpoints"]
+            row_cells[3].text = '\n\r'.join([f'{breakpoints[i]["gene0_chr"]}:{breakpoints[i]["gene0_pos"]}{breakpoints[i]["gene0_dir"]} -- {breakpoints[i]["gene1_chr"]}:{breakpoints[i]["gene1_pos"]}{breakpoints[i]["gene1_dir"]} ({breakpoints[i]["n_reads"]} reads)' for i in range(len(breakpoints))]);
         table.style = "Table Grid"
         document.add_paragraph("")
     else:
@@ -152,13 +175,43 @@ def main(run_dir, outfile, version):
         add_text(p, [(f"No fusions detected", True)])
 
 
+    document.add_heading('Rearrangements with only one side in the panel', level=3)
+
+    if len(one_sided) > 0:
+        table = document.add_table(rows=1, cols=4)
+        hdr_cells = table.rows[0].cells
+        hdr_cells[0].text = 'Gene/region 1'
+        hdr_cells[1].text = 'Gene/region 2'
+        hdr_cells[2].text = 'Supporting reads'
+        hdr_cells[3].text = 'Breakpoint(s)'
+        bold(hdr_cells)
+        for fus in one_sided:
+            g0 = fus["gene1"]
+            g1 = fus["gene2"]
+
+            row_cells = table.add_row().cells
+            row_cells[0].text = f"{g0['name'] if 'name' in g0 else ''} ({g0['chr']} ~{g0['pos']/100:.2f}Mbp)"
+            row_cells[1].text = f"{g1['name'] if 'name' in g1 else ''} ({g1['chr']} ~{g1['pos']/100:.2f}Mbp)"
+            row_cells[2].text = f'{fus["supporting_reads"]}'
+            if fus["supporting_reads"] >= 3:
+                bold([row_cells[2]])
+            breakpoints = fus["breakpoints"]
+            row_cells[3].text = '\n\r'.join([f'{breakpoints[i]["gene0_chr"]}:{breakpoints[i]["gene0_pos"]}{breakpoints[i]["gene0_dir"]} -- {breakpoints[i]["gene1_chr"]}:{breakpoints[i]["gene1_pos"]}{breakpoints[i]["gene1_dir"]} ({breakpoints[i]["n_reads"]} reads)' for i in range(len(breakpoints))]);
+        table.style = "Table Grid"
+        document.add_paragraph("")
+    else:
+        p = document.add_paragraph()
+        add_text(p, [(f"None detected", True)])
+
+
     # ----------------------- Karyotype ----------------------------
 
-    document.add_heading('Digital Karyotype', level=2)
+    #document.add_heading('Digital Karyotype', level=2)
+    document.add_heading('Inferred Full Chromosome or Arm Level Gain or Loss', level=2)
     p = document.add_paragraph()
     if 'warning' in k:
         for s in k['warning'].split('\n'):
-            add_text(p, [(f"WARNING: {s}", True, False, "#FF0000")])
+            add_text(p, [(f"WARNING: ", True, False, "#FF0000"), s])
         add_text(p, ["Digital karyotype: ", (f"{k['karyotype_string']}", True,False,"#FF0000")])
         add_text(p, ["ISCN nomenclature: ", (f"{k['ISCN_karyotype']}", True,False,"#FF0000")])
     else:
@@ -195,28 +248,21 @@ def main(run_dir, outfile, version):
     document.add_heading('RUNX1', level=3)
     p = document.add_paragraph()
     if "RUNX1" in cnvs:
-        add_text(p, [f"Local read-depth based copy number estimate: ", (f"{int(round(cnvs['RUNX1']['local']))}x", True)])
+        add_text(p, [f"Local read-depth based copy number estimate: ", (f"{int(round(cnvs['RUNX1']['local']))}x ({cnvs['RUNX1']['local']:.1f}x)", True)])
     else:
         add_text(p, "Not tested")
 
     document.add_heading('CDKN2A', level=3)
     p = document.add_paragraph()
     if "CDKN2A" in cnvs:
-        add_text(p, [f"Focal sequencing-depth based copy number estimate: ", (f"{int(round(cnvs['CDKN2A']['focal']))}x", True)])
+        add_text(p, [f"Focal sequencing-depth based copy number estimate: ", (f"{int(round(cnvs['CDKN2A']['focal']))}x ({cnvs['CDKN2A']['focal']:.1f}x)", True)])
     else:
         add_text(p, "Not tested")
 
     document.add_heading('CDKN2B', level=3)
     p = document.add_paragraph()
     if "CDKN2B" in cnvs:
-        add_text(p, [f"Focal sequencing-depth based copy number estimate: ", (f"{int(round(cnvs['CDKN2B']['focal']))}x", True)])
-    else:
-        add_text(p, "Not tested")
-
-    document.add_heading('IKZF1', level=3)
-    p = document.add_paragraph()
-    if "IKZF1" in cnvs:
-        add_text(p, [f"Focal sequencing-depth based copy number estimate: ", (f"{int(round(cnvs['IKZF1']['focal']))}x", True)])
+        add_text(p, [f"Focal sequencing-depth based copy number estimate: ", (f"{int(round(cnvs['CDKN2B']['focal']))}x ({cnvs['CDKN2B']['focal']:.1f}x)", True)])
     else:
         add_text(p, "Not tested")
 
@@ -236,6 +282,13 @@ def main(run_dir, outfile, version):
     else:
         add_text(p, "None detected")
 
+        document.add_heading('IKZF1', level=3)
+        p = document.add_paragraph()
+        if "IKZF1" in cnvs:
+            add_text(p, [f"Focal sequencing-depth based copy number estimate: ", (f"{int(round(cnvs['IKZF1']['focal']))}x  ({cnvs['IKZF1']['focal']:.1f}x)", True)])
+        else:
+            add_text(p, "Not tested")
+
     document.add_heading('PAX5 intragenic deletions', level=3)
     p = document.add_paragraph()
     if "PAX5" in cnvs and len(cnvs["PAX5"]["deletions"]) > 0:
@@ -243,6 +296,22 @@ def main(run_dir, outfile, version):
             add_text(p, [f"{d['chrom']}: {d['start']} - {d['end']} ({d['end']-d['start']} nt): ", (f"{d['reads']} supporting reads", True)])
     else:
         add_text(p, "None detected")
+
+    document.add_heading('PAX5 intragenic tandem duplications', level=3)
+    p = document.add_paragraph()
+    if "PAX5" in cnvs and len(cnvs["PAX5"]["duplications"]) > 0:
+        for d in cnvs["PAX5"]["duplications"]:
+            add_text(p, [f"{d['chrom']}: {d['start']} - {d['end']} ({d['end']-d['start']} nt): ", (f"{d['reads']} supporting reads", True)])
+    else:
+        add_text(p, "None detected")
+
+    document.add_heading('KMT2A intragenic tandem duplications', level=3)
+    p = document.add_paragraph()
+    if "KMT2A" in cnvs and len(cnvs["KMT2A"]["duplications"]) > 0:
+        for d in cnvs["KMT2A"]["duplications"]:
+            add_text(p, [f"{d['chrom']}: {d['start']} - {d['end']} ({d['end']-d['start']} nt): ", (f"{d['reads']} supporting reads", True)])
+    else:
+        add_text(p, "None detected - note that KMT2A partial tandem duplications that are not entirely within the gene will be reported as fusions of KMT2A with a proximal region of the genome")
 
 
     # ----------------------- FLT3-ITD ----------------------------
@@ -281,7 +350,19 @@ def main(run_dir, outfile, version):
     gens = json.loads(open(f"{run_dir}/genotypes.json").read())
     # coverage, mutations, phase, genotype
     document.add_heading('SNV Genotypes', level=2)
-    for g in gens:
+    document.add_heading('Disease variants', level=3)
+    for g in ["PAX5", "IKZF1"]:
+        p = document.add_paragraph()
+        add_text(p, [(f"{g}", True)])
+        add_text(p, [f"Sequencing depth: {gens[g]['coverage']:.2f}x"])
+        add_text(p, [f"Mutations:"])
+        for m in gens[g]['mutations']:
+            add_text(p, [f"  {m}: {gens[g]['mutations'][m]} AF"])
+        if len(gens[g]['mutations']) == 0:
+            add_text(p, ["(none detected)"])
+        add_text(p, [f"Genotype: ", (f"{gens[g]['genotype']}", True)], False)
+    document.add_heading('Pharmacogenomic variants', level=3)
+    for g in ["TPMT", "NUDT15"]:
         p = document.add_paragraph()
         add_text(p, [(f"{g}", True)])
         add_text(p, [f"Sequencing depth: {gens[g]['coverage']:.2f}x"])
@@ -292,26 +373,8 @@ def main(run_dir, outfile, version):
             add_text(p, ["(none detected)"])
         add_text(p, [f"Genotype: ", (f"{gens[g]['genotype']}", True)], False)
 
-    '''
-    p = document.add_paragraph()
-    if "PAX5" in gens:
-        if "239C>G" in gens["PAX5"]['mutations']:
-            add_text(p, ["PAX5 c.239C>G, p.Pro80Arg: ", ("Positive", True)])
-        else:
-            add_text(p, ["PAX5 c.239C>G, p.Pro80Arg: ", ("Negative", True)])
-    else:
-        add_text(p, ["PAX5 c.239C>G, p.Pro80Arg: ", ("Not tested", False)])
-    if "IKZF1" in gens:
-        if "475A>T" in gens["IKZF1"]['mutations']:
-            add_text(p, ["IKZF1 c.475A>T, p.Asm159Tyr: ", ("Positive", True)])
-        else:
-            add_text(p, ["IKZF1 c.475A>T, p.Asm159Tyr: ", ("Negative", True)])
-    else:
-        add_text(p, ["IKZF1 c.475A>T, p.Asm159Tyr: ", ("Not tested", False)])
-    '''
 
-
-    # ------------------------ Deets -----------------------------
+    # ------------------------ QC -----------------------------
 
     document.add_heading("Quality control metrics:", level=2)
 
@@ -331,6 +394,10 @@ def main(run_dir, outfile, version):
         add_text(p, [("Sequencer ID: ", True), qf["meta"]["sequencer_id"]])
         add_text(p, [("Flow cell ID: ", True), qf["meta"]["flow_cell_id"]], False)
 
+
+    # ------------------------- horizontal rule, then Methodology -------------------------
+    p = document.add_paragraph()
+    insertHR(p)
     document.add_heading('Methodology', level=2)
 
     p = document.add_paragraph()
@@ -361,65 +428,6 @@ def main(run_dir, outfile, version):
             row += 1
             table.add_row().cells
         table.rows[row].cells[col].text = gene
-
-
-
-    '''
-
-Small deletions / insertions.
-Gene
-Gain (number of copies) / Loss (hemizygous or homozygous)
-Deletion insertion coordinates
-
-Single nucleotide variants:
-Gene, mutation (protein and genomic), VAF
-
-Internal tandem duplication / partial tandem duplication:
-Gene, length, allelic ratio.
-Test Explanation: (see validation plan for list of reportable fusions)
-
-Karyotype:
-Report down to the chromosomal arm level for the karyotype
-Fusion detection:
-Methods
-Reportable alteration list
-ETV::RUNX1
-TCF3:PBX1
-KMT2Ar::***
-MEF2D
-ZNF384
-Small deletions / insertions:
-Methods
-Reportable alteration list
-iAMP21
-IKZF1, PAX5, CDKN2A, CDKN2B, Xp22.33/Yp11.31 (PAR1 region), ERG
-RUNX1
-ETV6, RB1, BTG1, EBF1
-SNV:
-Methods
-Reportable alteration list:
-B-ALL
-PAX5 (P80R), IKZF1 (N159Y)
-Pharmacogenomic
-TPMT, NUDT15
-Tandem Duplications:
-Methods
-Reportable alteration list
-FLT3, KMT2A, UBTF
-
-
-
-
-Test Limitations:
-
-Targeted:
-
-Depth:
-
-Low VAF:
-
-Low blast percentage:
-    '''
 
     document.save(outfile)
 
