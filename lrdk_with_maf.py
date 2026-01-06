@@ -233,8 +233,19 @@ def predict_karyo_v2(levels, medians, chrom_names, verbose):
     for i in range(len(medians)-2): # exclude X and Y
         cn_depths_auto[cns[i]].append(medians[i])
 
+    # fix autosomes first
+    for i in range(len(cns[:-2])):
+        if cns[i] == -1:
+            cns[i] = 1
+            cn_depths[1].append(medians[i])
+            cn_depths_auto[1].append(medians[i])
+            sys.stderr.write(f"changing {chrom_names[i]} from -1 to 1\n")
+
     blast_ratio = estimate_blast_ratio(cn_depths_auto)
     sys.stderr.write(f"blast_ratio in predict_karyo_v2: {blast_ratio}\n")
+
+    # adjust negative values for coverage only estimates
+    cns = adjust_cns(cns, cn_depths, medians, blast_ratio)
 
     return {chrom_names[i]:int(round(cns[i])) for i in range(len(chrom_names))},blast_ratio
 
@@ -674,49 +685,17 @@ def predict_karyo_maf(levels, lvls_maf_peak, medians, chrom_names, verbose):
             cn_depths_auto[cns[-1]].append(medians[i])
 
     # fix autosomes first
-    # parse cns, change remaining -1 to 1 (autosomes)
     for i in range(len(cns[:-2])):
         if cns[i] == -1:
             cns[i] = 1
             cn_depths[1].append(medians[i])
             cn_depths_auto[1].append(medians[i])
             sys.stderr.write(f"changing {chrom_names[i]} from -1 to 1\n")
-
+    
     # calculate blast ratio
     blast_ratio = estimate_blast_ratio(cn_depths_auto)
 
-    # adjust for low blast XY?
-    # we assume they cannot have zero copy of chrom except for Y; make them 1 copy
-    if cns[-1]==-1: # y is -1
-        cn_2 = sum(cn_depths[2]) / len(cn_depths[2])
-        cn_1 = cn_2/2
-        if  medians[-1] > cn_1 * 0.9 and  medians[-1] < cn_1 * 1.1: # is Y actually around 1n?
-            y_cn1 = medians[-1]
-            cns[-1] = 1
-            sys.stderr.write(f"y ~ cn2/2;set y to 1. ")
-            if cns[-2]==-1 or cns[-2]==1: # only try to adjust X if X equals -1, 1
-                if blast_ratio:
-                    estimated_x_cn2 = 2*y_cn1*blast_ratio + (1-blast_ratio)*y_cn1
-                    if medians[-2] > estimated_x_cn2 * 0.9 and  medians[-2] < estimated_x_cn2 * 1.1:
-                        cns[-2] = 2 # adjusting X to 2n
-                        sys.stderr.write(f"set X to 2n, with blast percentage\n")
-                    else:
-                        cns[-2] = 1
-                        sys.stderr.write(f"set X to 1n, with blast percentage\n")
-                else:
-                    # there was only 2n available
-                    if (cn_2-medians[-2]) > (medians[-2]-cn_1): # if X cov closer to 1n, then 1n
-                        cns[-2] = 1
-                        sys.stderr.write(f"set X to 1n, without blast percentage\n")
-                    else:
-                        cns[-2] = 2
-                        sys.stderr.write(f"set X to 2n, without blast percentage\n")
-        else:
-            # we don't have a Y 1n reference, give up
-            sys.stderr.write(f"no y 1n reference, set XY to 1.\n")
-            cns[-1] = 1
-            cns[-2] = 1
-
+    cns = adjust_cns(cns, cn_depths, medians, blast_ratio)
 
     return [{chrom_names[i]:int(round(cns[i])) for i in range(len(chrom_names))}, blast_ratio]
 
@@ -758,6 +737,42 @@ def estimate_blast_ratio(cn_medians_auto):
         sys.stderr.write("There is only autosomal diploid, we cannot estimate blast ratio\n")
 
     return blast_ratio
+
+    
+def adjust_cns(cns, cn_depths, medians, blast_ratio):
+    # adjust for low blast XY?
+    # we assume they cannot have zero copy of chrom except for Y; make them 1 copy
+    if cns[-1]<=-1: # y is -1 (or -2)
+        cn_2 = sum(cn_depths[2]) / len(cn_depths[2])
+        cn_1 = cn_2/2
+        if  medians[-1] > cn_1 * 0.9 and  medians[-1] < cn_1 * 1.1: # is Y actually around 1n?
+            y_cn1 = medians[-1]
+            cns[-1] = 1
+            sys.stderr.write(f"y ~ cn2/2;set y to 1. ")
+            if cns[-2]==-1 or cns[-2]==1: # only try to adjust X if X equals -1, 1
+                if blast_ratio:
+                    estimated_x_cn2 = 2*y_cn1*blast_ratio + (1-blast_ratio)*y_cn1
+                    if medians[-2] > estimated_x_cn2 * 0.9 and  medians[-2] < estimated_x_cn2 * 1.1:
+                        cns[-2] = 2 # adjusting X to 2n
+                        sys.stderr.write(f"set X to 2n, with blast percentage\n")
+                    else:
+                        cns[-2] = 1
+                        sys.stderr.write(f"set X to 1n, with blast percentage\n")
+                else:
+                    # there was only 2n available
+                    if (cn_2-medians[-2]) > (medians[-2]-cn_1): # if X cov closer to 1n, then 1n
+                        cns[-2] = 1
+                        sys.stderr.write(f"set X to 1n, without blast percentage\n")
+                    else:
+                        cns[-2] = 2
+                        sys.stderr.write(f"set X to 2n, without blast percentage\n")
+        else:
+            # we don't have a Y 1n reference, give up
+            sys.stderr.write(f"no y 1n reference, set XY to 1.\n")
+            cns[-1] = 1
+            cns[-2] = 1
+
+    return cns
 
 
 # read enriched region information for plotting MAF data
