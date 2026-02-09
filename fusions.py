@@ -50,9 +50,10 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
         for line in rf:
             parts = line.strip().split('\t')
             chrom, st, en = parts[0], int(parts[1]), int(parts[2])
-            if chrom not in ref.chrom_names:
+            if chrom not in ref.chr_idx:
+                #sys.stderr.write(f"WARNING: reference '{chrom}' in repeat file not recognized\n")
                 continue
-            chrom = ref.chrom_names.index(chrom)
+            chrom = ref.chr_idx[chrom]
             if chrom not in repeats:
                 repeats[chrom] = []
             repeats[chrom].append((st,en))
@@ -82,7 +83,10 @@ def main(bam_files, bed_file, repeatmasker_file, outdir=None, run_full_analysis=
     for line in open(bed_file):
         parts = line.strip().split('\t')
         chrom, st, en, gene = parts[:4]
-        chrom = ref.chroms.index(chrom)
+        if chrom not in ref.chr_idx:
+            sys.stderr.write(f"WARNING: reference '{chrom}' in bed file not recognized\n")
+            continue
+        chrom = ref.chr_idx[chrom]
         genes[chrom].append((gene, int(st), int(en)))
         gene_lookup[gene] = (chrom, int(st), int(en))
 
