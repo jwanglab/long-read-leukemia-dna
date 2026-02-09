@@ -18,7 +18,9 @@ Tested with Python 3.11 and Rust 1.87.0 (other modern versions of Rust will prob
     git clone https://github.com/jwanglab/long-read-leukemia-dna
     cd long-read-leukemia-dna
     pip install -r requirements.txt
-    cd maf_rust && cargo build --release
+    cd maf_rust
+    cargo build --release
+    cd ..
     chmod +x lrl
 
 
