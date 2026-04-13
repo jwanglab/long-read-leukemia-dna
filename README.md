@@ -1,3 +1,6 @@
+NOTICE: This software is deprecated in favor of [nasvar](https://github.com/jwanglab/nasvar) and is not actively maintained
+===========================================================================================================================
+
 
 Identification of tumorigenic drivers from nanopore DNA sequencing with adaptive sampling
 =========================================================================================
